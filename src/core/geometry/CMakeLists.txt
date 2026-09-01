@@ -1,0 +1,9 @@
+target_sources(
+  stacking-core-core
+  PRIVATE
+    dsf_vert.cpp
+    bounding_volume.cpp
+    geometry.cpp
+    plane.cpp
+    point.cpp
+)

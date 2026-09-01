@@ -1,0 +1,8 @@
+<?xml version="1.0"?>
+<robot name="preamble_metadata">
+  <link name="target">
+    <collision>
+      <geometry><dsf_vert filename="preamble.obj"/></geometry>
+    </collision>
+  </link>
+</robot>

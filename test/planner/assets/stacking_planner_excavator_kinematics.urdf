@@ -1,0 +1,77 @@
+<?xml version="1.0"?>
+<!--
+  Kinematic-only copy of stacking-planner/assets/excavator_3/vdk23_cx_ik.urdf.
+  Presentation links and meshes are omitted; all joints from cs_ground through
+  the configured legacy diffsim end effector, grip_body, are unchanged.
+-->
+<robot name="stacking_planner_excavator">
+  <link name="cs_ground"/>
+  <link name="base_link"/>
+  <link name="cs_cor"/>
+  <link name="cs_boom"/>
+  <link name="cs_arm"/>
+  <link name="cs_bucket"/>
+  <link name="cs_tilt"/>
+  <link name="cs_rotate"/>
+  <link name="grip_body"/>
+
+  <joint name="lower_body_joint" type="fixed">
+    <parent link="cs_ground"/>
+    <child link="base_link"/>
+    <origin rpy="0 0 0" xyz="0 0 0"/>
+  </joint>
+
+  <joint name="upper_body_joint" type="revolute">
+    <parent link="base_link"/>
+    <child link="cs_cor"/>
+    <origin rpy="0 0 0" xyz="0 0 1.0670"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-100" upper="100" velocity="0.1" effort="100"/>
+  </joint>
+
+  <joint name="boom_joint" type="revolute">
+    <parent link="cs_cor"/>
+    <child link="cs_boom"/>
+    <origin rpy="0 1.07374 0" xyz="0.117 -0.06 0.738"/>
+    <axis xyz="0 -1 0"/>
+    <limit lower="-0.59" upper="1.39" velocity="0.1" effort="100"/>
+  </joint>
+
+  <joint name="arm_joint" type="revolute">
+    <parent link="cs_boom"/>
+    <child link="cs_arm"/>
+    <origin rpy="0 -2.7182 0" xyz="2.718 0 5.0103"/>
+    <axis xyz="0 -1 0"/>
+    <limit lower="-2.8" upper="-0.65" velocity="0.1" effort="100"/>
+  </joint>
+
+  <joint name="bucket_joint" type="revolute">
+    <parent link="cs_arm"/>
+    <child link="cs_bucket"/>
+    <origin rpy="0 0.075 0" xyz="-0.2142 0 -2.9029"/>
+    <axis xyz="0 -1 0"/>
+    <limit lower="-2.495" upper="0.75" velocity="0.1" effort="100"/>
+  </joint>
+
+  <joint name="tilt_joint" type="revolute">
+    <parent link="cs_bucket"/>
+    <child link="cs_tilt"/>
+    <origin rpy="0 -1.5707963267948966 0" xyz="0 0 -0.5548"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-0.35" upper="0.35" velocity="0.1" effort="100"/>
+  </joint>
+
+  <joint name="rotate_joint" type="revolute">
+    <parent link="cs_tilt"/>
+    <child link="cs_rotate"/>
+    <origin rpy="3.141592653589793 -1.5707963267948966 0" xyz="0 0 -0.47"/>
+    <axis xyz="0 0 1"/>
+    <limit lower="-100" upper="100" velocity="0.1" effort="100"/>
+  </joint>
+
+  <joint name="Gripbody_joint" type="fixed">
+    <parent link="cs_rotate"/>
+    <child link="grip_body"/>
+    <origin rpy="-1.555796 0 -1.570796" xyz="0.009 0 -0.529"/>
+  </joint>
+</robot>

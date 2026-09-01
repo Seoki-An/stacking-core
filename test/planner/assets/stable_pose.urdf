@@ -1,0 +1,10 @@
+<?xml version="1.0"?>
+<robot name="stable_pose_reference">
+  <link name="target">
+    <collision>
+      <geometry>
+        <dsf_vert filename="model_2.obj"/>
+      </geometry>
+    </collision>
+  </link>
+</robot>

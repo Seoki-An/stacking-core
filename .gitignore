@@ -1,0 +1,8 @@
+/build/
+/python/build/
+/python/*.egg-info/
+/python/stacking_core/*.so
+/python/stacking_core/__pycache__/
+/build-*/
+/**/__pycache__/
+*.py[cod]

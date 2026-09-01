@@ -1,0 +1,9 @@
+<?xml version="1.0"?>
+<robot name="invalid_robot">
+  <link name="base"/>
+  <link name="child"/>
+  <joint name="unsupported" type="planar">
+    <parent link="base"/>
+    <child link="child"/>
+  </joint>
+</robot>

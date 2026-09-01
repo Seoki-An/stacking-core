@@ -1,0 +1,10 @@
+target_sources(
+  stacking-core-planner
+  PRIVATE
+    evaluation.cpp
+    force.cpp
+    joint.cpp
+    sampling.cpp
+    se3.cpp
+    simulation.cpp
+)
