@@ -10,6 +10,36 @@ def identity_pose(z: float = 0.0) -> np.ndarray:
 
 
 class SimulationBindingsTest(unittest.TestCase):
+    def test_pose_generator_returns_immutable_native_result(self) -> None:
+        nodes = np.array(
+            [
+                [-0.5, -0.5, -0.5],
+                [-0.5, -0.5, 0.5],
+                [-0.5, 0.5, -0.5],
+                [-0.5, 0.5, 0.5],
+                [0.5, -0.5, -0.5],
+                [0.5, -0.5, 0.5],
+                [0.5, 0.5, -0.5],
+                [0.5, 0.5, 0.5],
+            ]
+        )
+        cube = stacking_core.BodyModel.dsf(
+            1, nodes, mass=1.0, inertia=np.eye(3)
+        )
+        scene = stacking_core.SceneSnapshot(
+            1,
+            [stacking_core.BodyInstance(1, cube, identity_pose(1.5))],
+        )
+
+        result = stacking_core.PoseGenerator().solve(
+            stacking_core.PosegenProblem(scene, candidate=1)
+        )
+
+        self.assertEqual(result.optimal_pose.shape, (7,))
+        self.assertTrue(np.all(np.isfinite(result.optimal_pose)))
+        self.assertTrue(result.solver.converged)
+        self.assertIn(1, result.net_wrench)
+
     def test_pose_uses_scalar_last_quaternion_at_python_boundary(self) -> None:
         plane = stacking_core.BodyModel.plane(1)
         quaternion_xyzw = np.array([0.2, -0.3, 0.4, 0.5])

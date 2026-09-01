@@ -1,3 +1,4 @@
+#include <stacking_core/posegen.hpp>
 #include <stacking_core/simulation.hpp>
 
 #include <pybind11/eigen.h>
@@ -92,6 +93,10 @@ struct python_simulation_result_t {
   simulation_solver_stats_t solver;
 };
 
+struct python_posegen_problem_t {
+  posegen_problem_t value;
+};
+
 python_simulation_result_t python_result(simulation_result_t result) {
   return python_simulation_result_t {
     .snapshot = python_scene_snapshot_t {.value = std::move(result.snapshot)},
@@ -112,6 +117,15 @@ py::dict contact_dict(contact_t const& contact) {
   value["normal"] = contact.feature.normal;
   value["friction"] = contact.friction;
   return value;
+}
+
+template<typename Value>
+py::dict entity_map(std::map<EntityId, Value> const& values) {
+  py::dict result;
+  for (auto const& [entity, value] : values) {
+    result[py::int_(entity.value())] = py::cast(value);
+  }
+  return result;
 }
 
 }  // namespace
@@ -410,6 +424,199 @@ PYBIND11_MODULE(_native, module) {
       [](python_scene_snapshot_t const& scene, std::uint64_t id) {
         return scene.value->body(EntityId {id}).motion().angular;
       });
+
+  py::class_<posegen_trust_region_config_t>(
+    module, "PosegenTrustRegionConfig")
+    .def(py::init<>())
+    .def_readwrite("max_iters", &posegen_trust_region_config_t::max_iters)
+    .def_readwrite("eps", &posegen_trust_region_config_t::eps)
+    .def_readwrite("delta_init", &posegen_trust_region_config_t::delta_init)
+    .def_readwrite("delta_max", &posegen_trust_region_config_t::delta_max)
+    .def_readwrite(
+      "delta_reduction_rate",
+      &posegen_trust_region_config_t::delta_reduction_rate)
+    .def_readwrite(
+      "delta_expansion_rate",
+      &posegen_trust_region_config_t::delta_expansion_rate)
+    .def_readwrite(
+      "delta_lower_thresh", &posegen_trust_region_config_t::delta_lower_thresh)
+    .def_readwrite(
+      "delta_upper_thresh", &posegen_trust_region_config_t::delta_upper_thresh)
+    .def_readwrite(
+      "improvement_thresh", &posegen_trust_region_config_t::improvement_thresh)
+    .def_readwrite("tol", &posegen_trust_region_config_t::tol);
+
+  py::class_<posegen_hausdorff_config_t>(module, "PosegenHausdorffConfig")
+    .def(py::init<>())
+    .def_readwrite("eps", &posegen_hausdorff_config_t::eps)
+    .def_readwrite("max_iters", &posegen_hausdorff_config_t::max_iters)
+    .def_readwrite("error_tol", &posegen_hausdorff_config_t::error_tol)
+    .def_readwrite("radius_init", &posegen_hausdorff_config_t::radius_init)
+    .def_readwrite(
+      "radius_reduction_rate",
+      &posegen_hausdorff_config_t::radius_reduction_rate)
+    .def_readwrite(
+      "radius_expansion_rate",
+      &posegen_hausdorff_config_t::radius_expansion_rate)
+    .def_readwrite(
+      "gain_ratio_lower_thresh",
+      &posegen_hausdorff_config_t::gain_ratio_lower_thresh)
+    .def_readwrite(
+      "gain_ratio_upper_thresh",
+      &posegen_hausdorff_config_t::gain_ratio_upper_thresh)
+    .def_readwrite(
+      "gain_ratio_max", &posegen_hausdorff_config_t::gain_ratio_max);
+
+  py::class_<posegen_objective_config_t>(module, "PosegenObjectiveConfig")
+    .def(py::init<>())
+    .def_readwrite("rho", &posegen_objective_config_t::rho)
+    .def_readwrite(
+      "narrow_phase_scene_tol",
+      &posegen_objective_config_t::narrow_phase_scene_tol)
+    .def_readwrite(
+      "narrow_phase_candidate_tol",
+      &posegen_objective_config_t::narrow_phase_candidate_tol)
+    .def_readwrite("eps_gap", &posegen_objective_config_t::eps_gap)
+    .def_readwrite("eps_comp", &posegen_objective_config_t::eps_comp)
+    .def_readwrite("eps_cone", &posegen_objective_config_t::eps_cone)
+    .def_readwrite("eps_target", &posegen_objective_config_t::eps_target)
+    .def_readwrite("k_comp", &posegen_objective_config_t::k_comp)
+    .def_readwrite("k_wrench", &posegen_objective_config_t::k_wrench)
+    .def_readwrite("k_gap", &posegen_objective_config_t::k_gap)
+    .def_readwrite("k_gap_c", &posegen_objective_config_t::k_gap_c)
+    .def_readwrite("k_target", &posegen_objective_config_t::k_target)
+    .def_readwrite("k_potential", &posegen_objective_config_t::k_potential)
+    .def_readwrite("k_xy", &posegen_objective_config_t::k_xy)
+    .def_readwrite("k_box", &posegen_objective_config_t::k_box)
+    .def_readwrite("k_reg", &posegen_objective_config_t::k_reg)
+    .def_readwrite("k_lower", &posegen_objective_config_t::k_lower)
+    .def_readwrite("w_box", &posegen_objective_config_t::w_box)
+    .def_readwrite("gravity", &posegen_objective_config_t::gravity)
+    .def_readwrite("ground_height", &posegen_objective_config_t::ground_height);
+
+  py::class_<posegen_force_solver_config_t>(
+    module, "PosegenForceSolverConfig")
+    .def(py::init<>())
+    .def_readwrite("max_iters", &posegen_force_solver_config_t::max_iters)
+    .def_readwrite(
+      "beta_consensus", &posegen_force_solver_config_t::beta_consensus)
+    .def_readwrite("beta_contact", &posegen_force_solver_config_t::beta_contact)
+    .def_readwrite(
+      "beta_update_interval",
+      &posegen_force_solver_config_t::beta_update_interval)
+    .def_readwrite("tol_abs", &posegen_force_solver_config_t::tol_abs)
+    .def_readwrite("tol_rel", &posegen_force_solver_config_t::tol_rel);
+
+  py::class_<posegen_config_t>(module, "PosegenConfig")
+    .def(py::init<>())
+    .def_readwrite("trust_region", &posegen_config_t::trust_region)
+    .def_readwrite("hausdorff", &posegen_config_t::hausdorff)
+    .def_readwrite("objective", &posegen_config_t::objective)
+    .def_readwrite("force_solver", &posegen_config_t::force_solver);
+
+  py::class_<python_posegen_problem_t>(module, "PosegenProblem")
+    .def(
+      py::init([](python_scene_snapshot_t const& scene,
+                  std::uint64_t candidate,
+                  std::vector<std::uint64_t> const& targets,
+                  std::vector<std::uint64_t> const& boundaries) {
+        std::vector<EntityId> ids;
+        ids.reserve(scene.value->bodyCount());
+        for (std::size_t index = 0; index < scene.value->bodyCount(); ++index) {
+          ids.push_back(scene.value->body(index).id());
+        }
+        auto convert = [](std::vector<std::uint64_t> const& values) {
+          std::vector<EntityId> result;
+          result.reserve(values.size());
+          for (std::uint64_t value : values) {
+            result.emplace_back(value);
+          }
+          return result;
+        };
+        return python_posegen_problem_t {.value = posegen_problem_t {
+          .scene = SceneView {scene.value, std::move(ids)},
+          .candidate = EntityId {candidate},
+          .targets = convert(targets),
+          .boundaries = convert(boundaries),
+        }};
+      }),
+      py::arg("scene"),
+      py::arg("candidate"),
+      py::arg("targets") = std::vector<std::uint64_t> {},
+      py::arg("boundaries") = std::vector<std::uint64_t> {});
+
+  py::class_<posegen_force_solver_stats_t>(
+    module, "PosegenForceSolverStats")
+    .def_readonly("iters", &posegen_force_solver_stats_t::iters)
+    .def_readonly("converged", &posegen_force_solver_stats_t::converged)
+    .def_readonly(
+      "primal_residual", &posegen_force_solver_stats_t::primal_residual)
+    .def_readonly(
+      "dual_residual", &posegen_force_solver_stats_t::dual_residual);
+
+  py::class_<posegen_solver_stats_t>(module, "PosegenSolverStats")
+    .def_readonly("iters", &posegen_solver_stats_t::iters)
+    .def_readonly("accepted_iters", &posegen_solver_stats_t::accepted_iters)
+    .def_readonly("objective_evals", &posegen_solver_stats_t::objective_evals)
+    .def_readonly("converged", &posegen_solver_stats_t::converged)
+    .def_readonly("grad_norm", &posegen_solver_stats_t::grad_norm)
+    .def_readonly(
+      "trust_region_radius", &posegen_solver_stats_t::trust_region_radius)
+    .def_readonly(
+      "scene_graph_rebuilds", &posegen_solver_stats_t::scene_graph_rebuilds)
+    .def_readonly(
+      "scene_graph_reuses", &posegen_solver_stats_t::scene_graph_reuses)
+    .def_readonly("force_solver", &posegen_solver_stats_t::force_solver);
+
+  py::class_<posegen_result_t>(module, "PosegenResult")
+    .def_property_readonly(
+      "optimal_pose",
+      [](posegen_result_t const& result) {
+        return pose_vector(result.optimal_pose);
+      })
+    .def_readonly(
+      "candidate_contact_forces",
+      &posegen_result_t::candidate_contact_forces)
+    .def_readonly("c_feq", &posegen_result_t::c_feq)
+    .def_readonly("c_comp", &posegen_result_t::c_comp)
+    .def_readonly("c_gap", &posegen_result_t::c_gap)
+    .def_property_readonly(
+      "net_wrench",
+      [](posegen_result_t const& result) {
+        return entity_map(result.net_wrench);
+      })
+    .def_property_readonly(
+      "contact_force",
+      [](posegen_result_t const& result) {
+        return entity_map(result.contact_force);
+      })
+    .def_property_readonly(
+      "contact_point",
+      [](posegen_result_t const& result) {
+        return entity_map(result.contact_point);
+      })
+    .def_property_readonly(
+      "contact_normal",
+      [](posegen_result_t const& result) {
+        return entity_map(result.contact_normal);
+      })
+    .def_readonly("solver", &posegen_result_t::solver);
+
+  py::class_<PoseGenerator>(module, "PoseGenerator")
+    .def(
+      py::init<posegen_config_t>(),
+      py::arg("config") = posegen_config_t {})
+    .def_property(
+      "config",
+      [](PoseGenerator const& generator) { return generator.config(); },
+      &PoseGenerator::setConfig)
+    .def(
+      "solve",
+      [](PoseGenerator& generator, python_posegen_problem_t const& problem) {
+        py::gil_scoped_release release;
+        return generator.solve(problem.value);
+      },
+      py::arg("problem"));
 
   py::class_<simulation_solver_stats_t>(module, "SolverStats")
     .def_readonly("iters", &simulation_solver_stats_t::iters)

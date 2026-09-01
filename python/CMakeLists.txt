@@ -5,7 +5,9 @@ pybind11_add_module(stacking-core-python MODULE bindings.cpp)
 target_compile_features(stacking-core-python PRIVATE cxx_std_20)
 target_link_libraries(
   stacking-core-python
-  PRIVATE stacking-core-simulation
+  PRIVATE
+    stacking-core-simulation
+    stacking-core-posegen
 )
 set(
   STACKING_CORE_PYTHON_OUTPUT_DIR
