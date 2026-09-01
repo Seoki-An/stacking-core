@@ -10,6 +10,16 @@ def identity_pose(z: float = 0.0) -> np.ndarray:
 
 
 class SimulationBindingsTest(unittest.TestCase):
+    def test_posegen_wrench_matrix_round_trips(self) -> None:
+        objective = stacking_core.PosegenObjectiveConfig()
+        expected = 2.0 * np.eye(6)
+
+        objective.k_wrench = expected
+
+        self.assertTrue(np.array_equal(objective.k_wrench, expected))
+        with self.assertRaisesRegex(ValueError, "k_wrench must have shape"):
+            objective.k_wrench = np.eye(3)
+
     def test_pose_generator_returns_immutable_native_result(self) -> None:
         nodes = np.array(
             [

@@ -42,11 +42,12 @@ statistics:
 python -m pip install -e python
 ```
 
-The editable build invokes the same CMake targets as the C++ build and requires
-the Python development headers and pybind11 development package. To build it
-directly with CMake instead:
+The editable build invokes the same CMake targets as the C++ build and uses
+nanobind for the native module. To build it directly with CMake, install the
+Python build requirements first:
 
 ```bash
+python -m pip install nanobind
 cmake -S . -B build-python \
   -DSTACKING_CORE_BUILD_PYTHON=ON \
   -DCMAKE_BUILD_TYPE=Release

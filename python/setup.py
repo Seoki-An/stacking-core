@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 
+import nanobind
 from setuptools import Extension, setup
 from setuptools.command.build_ext import build_ext
 
@@ -32,7 +33,8 @@ class CMakeBuild(build_ext):
             "-DBUILD_TESTING=OFF",
             "-DSTACKING_CORE_BUILD_PYTHON=ON",
             f"-DSTACKING_CORE_PYTHON_OUTPUT_DIR={output}",
-            f"-DPython3_EXECUTABLE={sys.executable}",
+            f"-DPython_EXECUTABLE={sys.executable}",
+            f"-Dnanobind_DIR={nanobind.cmake_dir()}",
         ]
         subprocess.run(configure, check=True)
 

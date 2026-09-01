@@ -1,7 +1,17 @@
-find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
-find_package(pybind11 CONFIG REQUIRED)
+find_package(Python COMPONENTS Interpreter Development REQUIRED)
+execute_process(
+  COMMAND "${Python_EXECUTABLE}" -m nanobind --cmake_dir
+  OUTPUT_VARIABLE nanobind_cmake_dir
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+  RESULT_VARIABLE nanobind_cmake_result
+)
+if(NOT nanobind_cmake_result EQUAL 0)
+  message(FATAL_ERROR "Could not locate the nanobind CMake package")
+endif()
+list(APPEND CMAKE_PREFIX_PATH "${nanobind_cmake_dir}")
+find_package(nanobind CONFIG REQUIRED)
 
-pybind11_add_module(stacking-core-python MODULE bindings.cpp)
+nanobind_add_module(stacking-core-python bindings.cpp)
 target_compile_features(stacking-core-python PRIVATE cxx_std_20)
 target_link_libraries(
   stacking-core-python
@@ -36,7 +46,7 @@ configure_file(
 
 set(
   STACKING_CORE_PYTHON_INSTALL_DIR
-  "${CMAKE_INSTALL_LIBDIR}/python${Python3_VERSION_MAJOR}.${Python3_VERSION_MINOR}/site-packages"
+  "${CMAKE_INSTALL_LIBDIR}/python${Python_VERSION_MAJOR}.${Python_VERSION_MINOR}/site-packages"
   CACHE PATH
   "Installation directory for the stacking_core Python package"
 )
@@ -56,6 +66,6 @@ if(BUILD_TESTING)
     COMMAND
       "${CMAKE_COMMAND}" -E env
       "PYTHONPATH=${PROJECT_BINARY_DIR}/python"
-      "${Python3_EXECUTABLE}" "${PROJECT_BINARY_DIR}/python/test_bindings.py"
+      "${Python_EXECUTABLE}" "${PROJECT_BINARY_DIR}/python/test_bindings.py"
   )
 endif()
