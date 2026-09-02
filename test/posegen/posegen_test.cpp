@@ -123,6 +123,18 @@ void require_solver_stats(
   require(std::isfinite(solver.force_solver.dual_residual));
 }
 
+// The reference values below were produced by diffsim, so they are pinned to
+// diffsim's own configuration rather than to whatever stacking-core currently
+// defaults to. stacking-core's defaults follow its consumers and may move
+// independently; these three fields are the ones that have diverged.
+posegen_config_t diffsim_reference_config() {
+  posegen_config_t config;
+  config.trust_region.tol = 1e-8;
+  config.objective.eps_target = 5e-1;
+  config.objective.k_potential = 1.0;
+  return config;
+}
+
 }  // namespace
 
 int main() {
@@ -142,7 +154,7 @@ int main() {
       Vector3 {0.3, 0.0, 0.0}, Vector3 {0.25, 0.25, 0.5}),
   });
 
-  PoseGenerator generator;
+  PoseGenerator generator {diffsim_reference_config()};
   posegen_config_t const config = generator.config();
 
   scene_t ground_scene = make_scene({
@@ -283,6 +295,52 @@ int main() {
   require(std::abs(boundary.c_feq - 0.0062673909671058861) < 1e-9);
   require(std::abs(boundary.c_gap - 0.10325035190866688) < 1e-8);
   require_solver_stats(boundary, config);
+
+  // The interior-point backend solves the same force subproblem directly over
+  // one force per contact. It must reach the same pose as the graph solver.
+  scene_t admm_scene = make_scene({
+    make_body(1, cube, Vector3 {0.1, 0.0, 1.4}),
+    make_body(2, cube, Vector3 {0.0, 0.0, 0.5}),
+  });
+  scene_t interior_scene = make_scene({
+    make_body(1, cube, Vector3 {0.1, 0.0, 1.4}),
+    make_body(2, cube, Vector3 {0.0, 0.0, 0.5}),
+  });
+  posegen_config_t interior_config = diffsim_reference_config();
+  interior_config.force_solver.method =
+    posegen_force_solver_e::interior_point;
+  require(
+    posegen_config_t {}.force_solver.method ==
+    posegen_force_solver_e::graph_admm);
+
+  PoseGenerator admm_generator {diffsim_reference_config()};
+  PoseGenerator interior_generator {interior_config};
+  posegen_result_t const admm_result = admm_generator.solve(
+    posegen_problem_t {
+      .scene = admm_scene.view,
+      .candidate = EntityId {1},
+      .targets = {},
+      .boundaries = {},
+    });
+  posegen_result_t const interior_result = interior_generator.solve(
+    posegen_problem_t {
+      .scene = interior_scene.view,
+      .candidate = EntityId {1},
+      .targets = {},
+      .boundaries = {},
+    });
+  require(interior_result.solver.force_solver.converged);
+  require(interior_result.solver.force_solver.iters > 0);
+  require_pose_near(
+    interior_result.optimal_pose,
+    admm_result.optimal_pose.position,
+    admm_result.optimal_pose.orientation,
+    1e-4);
+  require(
+    std::abs(interior_result.c_feq - admm_result.c_feq) < 1e-4);
+  require(interior_result.candidate_contact_forces.cols() ==
+    admm_result.candidate_contact_forces.cols());
+  require_solver_stats(interior_result, interior_config);
 
   bool rejected_candidate = false;
   try {

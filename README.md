@@ -259,9 +259,26 @@ if (!result.solver.converged) {
 
 The solver includes ground and multi-body contact forces, boundary reactions,
 force equilibrium, target containment, and the Riemannian trust-region pose
-update. Consecutive solves reuse immutable scene contacts and force-graph warm
+update. The contact-force subproblem is solved by a consensus ADMM over the
+force graph. A primal-dual interior-point backend solves the same subproblem
+directly over one force per contact, for comparing the two:
+
+```cpp
+posegen_config_t config;
+config.force_solver.method = stacking_core::posegen_force_solver_e::
+  interior_point;
+```
+
+The graph solver remains the default. The interior-point backend reuses the
+same iteration limit and tolerances, reports Newton steps in
+`force_solver.iters`, and writes node forces back in the graph layout, so
+results, contact forces, and the pose gradient are unchanged apart from solver
+accuracy. Consecutive solves reuse immutable scene contacts and force-graph warm
 state when only the candidate pose changes; scene or contact-defining
-configuration changes invalidate that cache. The result reports outer and
+configuration changes invalidate that cache. Warm starting is what makes the
+graph solver fast here: a pose optimization calls the force solve tens of
+times on a slightly perturbed problem, and the graph solver amortizes across
+those calls in a way an interior-point method cannot. The result reports outer and
 force-solver convergence, residuals, objective evaluations, and scene-graph
 reuse counts.
 
@@ -271,5 +288,10 @@ behavior uses the intended contact-frame normal column, correcting diffsim's
 invalid `col(-1)` cone-gradient access, and the cone KKT force gradient is
 divided by the smoothed tangential magnitude rather than by one built from a
 tangent and the normal. Both corrections only move contacts that carry
-tangential load. The point-cloud posegen variant and the deprecated `poseinit`
-module are not part of stacking-core.
+tangential load. Default objective and trust-region values follow the
+`stacking-planner` and `stacking-tabletop` workflows where those agree
+(`eps_target`, `k_potential`, and the trust-region tolerance); parameters those
+projects set per robot scale, such as `eps_gap`, `eps_comp`, `k_box`, and
+`w_box`, keep their scale-neutral values and remain the consumer's choice. The
+point-cloud posegen variant and the deprecated `poseinit` module are not part
+of stacking-core.

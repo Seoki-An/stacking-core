@@ -5,6 +5,7 @@ target_sources(
   stacking-core-posegen
   PRIVATE
     force_graph.cpp
+    cone_qp.cpp
     objective.cpp
     pose_generator.cpp
 )

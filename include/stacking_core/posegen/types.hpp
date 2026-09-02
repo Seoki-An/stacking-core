@@ -17,7 +17,7 @@ struct posegen_trust_region_config_t {
   Scalar delta_lower_thresh = 0.25;
   Scalar delta_upper_thresh = 0.75;
   Scalar improvement_thresh = 0.125;
-  Scalar tol = 1e-8;
+  Scalar tol = 1e-12;
 };
 
 struct posegen_hausdorff_config_t {
@@ -39,13 +39,13 @@ struct posegen_objective_config_t {
   Scalar eps_gap = 2e-2;
   Scalar eps_comp = 2e-2;
   Scalar eps_cone = 1e-2;
-  Scalar eps_target = 5e-1;
+  Scalar eps_target = 5e-2;
   Scalar k_comp = 0.0;
   Matrix6 k_wrench = Matrix6::Identity();
   Scalar k_gap = 0.0;
   Scalar k_gap_c = 80.0;
   Scalar k_target = 1.0;
-  Scalar k_potential = 1.0;
+  Scalar k_potential = 0.2;
   Scalar k_xy = 0.0;
   Scalar k_box = 0.1;
   Scalar k_reg = 0.0;
@@ -55,7 +55,16 @@ struct posegen_objective_config_t {
   Scalar ground_height = 0.0;
 };
 
+// Which solver handles the contact-force subproblem. The graph solver is the
+// default; the interior-point solver exists so the two can be compared on the
+// same problem, and consumes the same iteration limit and tolerances.
+enum class posegen_force_solver_e {
+  graph_admm,
+  interior_point,
+};
+
 struct posegen_force_solver_config_t {
+  posegen_force_solver_e method = posegen_force_solver_e::graph_admm;
   int max_iters = 1000;
   Scalar beta_consensus = 1.0;
   Scalar beta_contact = 1.0;

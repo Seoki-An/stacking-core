@@ -1,8 +1,12 @@
 #include "force_graph.hpp"
 
+#include "cone_qp.hpp"
+
 #include <algorithm>
 #include <cmath>
+#include <map>
 #include <stdexcept>
+#include <utility>
 
 namespace stacking_core::posegen_detail {
 namespace {
@@ -214,7 +218,6 @@ void ForceGraph::init() {
 posegen_force_solver_stats_t ForceGraph::solve() {
   init();
   posegen_objective_config_t const& obj = config_.objective;
-  posegen_force_solver_config_t const& solver = config_.force_solver;
   posegen_force_solver_stats_t stats;
 
   if (obj.k_wrench.cwiseAbs().maxCoeff() == 0.0 && obj.k_comp == 0.0) {
@@ -255,6 +258,43 @@ posegen_force_solver_stats_t ForceGraph::solve() {
     }
     node.q = node.jac * node_wrench(node) * node.mass * gravity;
   }
+
+  stats = config_.force_solver.method ==
+      posegen_force_solver_e::interior_point
+    ? solve_interior_point()
+    : solve_graph_admm();
+
+  for_each_factor([&]<force_factor_e factor>() {
+    for (auto& [entities, edge] : edges<factor>()) {
+      Vector3 force_diff = Vector3::Zero();
+      for (std::size_t idx = 0; idx < edge.cardinality; ++idx) {
+        force_graph::node_t const& node = nodes_.at(entities[idx]);
+        if (node.boundary) {
+          continue;
+        }
+        force_diff += edge.jac[idx] * obj.k_wrench *
+          (node.jac.transpose() * *node.force + node.mass * gravity);
+      }
+      Scalar const gap = std::max(edge.gap - obj.eps_comp, Scalar {0.0});
+      force_diff +=
+        (obj.rho + obj.k_comp * gap * gap) * edge.representative_force;
+      Vector3 const grad = cone_grad(
+        edge.representative_force, edge.friction, obj.eps_cone);
+      edge.contact_multiplier = -grad.dot(force_diff) / grad.squaredNorm();
+    }
+  });
+  return stats;
+}
+
+
+posegen_force_solver_stats_t ForceGraph::solve_graph_admm() {
+  posegen_objective_config_t const& obj = config_.objective;
+  posegen_force_solver_config_t const& solver = config_.force_solver;
+  posegen_force_solver_stats_t stats;
+  Matrix6 const zero_wrench = Matrix6::Zero();
+  auto node_wrench = [&](force_graph::node_t const& node) -> Matrix6 const& {
+    return node.boundary ? zero_wrench : obj.k_wrench;
+  };
 
   Scalar beta_contact = solver.beta_contact;
   Scalar beta_consensus = solver.beta_consensus;
@@ -407,23 +447,83 @@ posegen_force_solver_stats_t ForceGraph::solve() {
     }
   }
 
+  return stats;
+}
+
+// Solves the same subproblem directly over one force per contact. Node forces
+// are written back afterwards so every downstream consumer -- the cone KKT
+// multiplier below, the reported contact forces, the pose gradient -- sees the
+// layout it expects and cannot tell which solver produced it.
+posegen_force_solver_stats_t ForceGraph::solve_interior_point() {
+  posegen_objective_config_t const& obj = config_.objective;
+  Matrix6 const zero_wrench = Matrix6::Zero();
+  auto node_wrench = [&](force_graph::node_t const& node) -> Matrix6 const& {
+    return node.boundary ? zero_wrench : obj.k_wrench;
+  };
+
+  std::map<std::pair<EntityId, std::size_t>, std::size_t> slot_to_contact;
+  cone_qp_problem_t problem;
+  problem.eps = obj.eps_cone;
+  std::size_t contact_count = 0;
   for_each_factor([&]<force_factor_e factor>() {
     for (auto& [entities, edge] : edges<factor>()) {
-      Vector3 force_diff = Vector3::Zero();
       for (std::size_t idx = 0; idx < edge.cardinality; ++idx) {
-        force_graph::node_t const& node = nodes_.at(entities[idx]);
-        if (node.boundary) {
-          continue;
-        }
-        force_diff += edge.jac[idx] * obj.k_wrench *
-          (node.jac.transpose() * *node.force + node.mass * gravity);
+        slot_to_contact[{entities[idx], edge.node_indices[idx]}] =
+          contact_count;
       }
-      Scalar const gap = std::max(edge.gap - obj.eps_comp, Scalar {0.0});
-      force_diff +=
-        (obj.rho + obj.k_comp * gap * gap) * edge.representative_force;
-      Vector3 const grad = cone_grad(
-        edge.representative_force, edge.friction, obj.eps_cone);
-      edge.contact_multiplier = -grad.dot(force_diff) / grad.squaredNorm();
+      problem.friction.push_back(edge.friction);
+      ++contact_count;
+    }
+  });
+
+  Eigen::Index const dim = static_cast<Eigen::Index>(3 * contact_count);
+  problem.hessian = Eigen::MatrixXd::Zero(dim, dim);
+  problem.linear = Eigen::VectorXd::Zero(dim);
+  for (auto& [id, node] : nodes_) {
+    if (node.jac.rows() == 0) {
+      continue;
+    }
+    Eigen::Index const slots = node.jac.rows() / 3;
+    Eigen::MatrixXd block =
+      node.jac * node_wrench(node) * node.jac.transpose();
+    block.diagonal() += node.lhs_diag_base;
+    for (Eigen::Index a = 0; a < slots; ++a) {
+      Eigen::Index const row = static_cast<Eigen::Index>(
+        3 * slot_to_contact.at({id, static_cast<std::size_t>(a)}));
+      problem.linear.segment<3>(row) += node.q.segment<3>(3 * a);
+      for (Eigen::Index b = 0; b < slots; ++b) {
+        Eigen::Index const col = static_cast<Eigen::Index>(
+          3 * slot_to_contact.at({id, static_cast<std::size_t>(b)}));
+        problem.hessian.block<3, 3>(row, col) +=
+          block.block<3, 3>(3 * a, 3 * b);
+      }
+    }
+  }
+
+  posegen_force_solver_stats_t const stats = solve_cone_qp(
+    problem, interior_point_forces_, config_.force_solver);
+
+  for (auto& [id, node] : nodes_) {
+    static_cast<void>(id);
+    if (node.force) {
+      node.force->setZero();
+      node.consensus_dual->setZero();
+      node.contact_dual->setZero();
+    }
+  }
+  for_each_factor([&]<force_factor_e factor>() {
+    for (auto& [entities, edge] : edges<factor>()) {
+      Eigen::Index const row = static_cast<Eigen::Index>(
+        3 * slot_to_contact.at({entities[0], edge.node_indices[0]}));
+      edge.representative_force = interior_point_forces_.segment<3>(row);
+      for (std::size_t idx = 0; idx < edge.cardinality; ++idx) {
+        *edge.force[idx] = edge.representative_force;
+        edge.auxiliary[idx] = Vector4 {
+          edge.representative_force[0],
+          edge.representative_force[1],
+          obj.eps_cone,
+          edge.representative_force[2]};
+      }
     }
   });
   return stats;

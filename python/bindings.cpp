@@ -466,8 +466,13 @@ NB_MODULE(_native, module) {
       .def_rw("gravity", &posegen_objective_config_t::gravity)
       .def_rw("ground_height", &posegen_objective_config_t::ground_height);
 
+  nb::enum_<posegen_force_solver_e>(module, "PosegenForceSolver")
+      .value("GRAPH_ADMM", posegen_force_solver_e::graph_admm)
+      .value("INTERIOR_POINT", posegen_force_solver_e::interior_point);
+
   nb::class_<posegen_force_solver_config_t>(module, "PosegenForceSolverConfig")
       .def(nb::init<>())
+      .def_rw("method", &posegen_force_solver_config_t::method)
       .def_rw("max_iters", &posegen_force_solver_config_t::max_iters)
       .def_rw("beta_consensus", &posegen_force_solver_config_t::beta_consensus)
       .def_rw("beta_contact", &posegen_force_solver_config_t::beta_contact)

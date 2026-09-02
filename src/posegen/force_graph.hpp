@@ -152,6 +152,8 @@ public:
 
 private:
   void init();
+  [[nodiscard]] posegen_force_solver_stats_t solve_graph_admm();
+  [[nodiscard]] posegen_force_solver_stats_t solve_interior_point();
 
   posegen_config_t const& config_;
   EntityId candidate_;
@@ -159,6 +161,7 @@ private:
   std::tuple<
     force_graph::edge_map_t<force_factor_e::ground_contact>,
     force_graph::edge_map_t<force_factor_e::pair_contact>> edges_;
+  Eigen::VectorXd interior_point_forces_;
 };
 
 }  // namespace stacking_core::posegen_detail
