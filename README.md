@@ -273,7 +273,12 @@ The graph solver remains the default. The interior-point backend reuses the
 same iteration limit and tolerances, reports Newton steps in
 `force_solver.iters`, and writes node forces back in the graph layout, so
 results, contact forces, and the pose gradient are unchanged apart from solver
-accuracy. Consecutive solves reuse immutable scene contacts and force-graph warm
+accuracy.
+
+Two contacts couple only when they share a body, so the condensed Newton matrix
+inherits that sparsity: a contact chain gives a block-tridiagonal system. The
+pattern is fixed for a given contact set, so it is analyzed once per solve and
+only the per-contact diagonal blocks are rewritten between Newton steps. Consecutive solves reuse immutable scene contacts and force-graph warm
 state when only the candidate pose changes; scene or contact-defining
 configuration changes invalidate that cache. Warm starting is what makes the
 graph solver fast here: a pose optimization calls the force solve tens of

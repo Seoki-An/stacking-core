@@ -1,11 +1,14 @@
 #include "cone_qp.hpp"
 
-#include <Eigen/Cholesky>
+#include <Eigen/SparseCholesky>
+#include <Eigen/SparseCore>
 
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 namespace stacking_core::posegen_detail {
+
 namespace {
 
 // Fraction of the distance to the cone boundary a step is allowed to take.
@@ -85,21 +88,68 @@ posegen_force_solver_stats_t solve_cone_qp(
   Eigen::VectorXd multiplier = Eigen::VectorXd::Ones(
     static_cast<Eigen::Index>(count));
   Eigen::VectorXd slack(static_cast<Eigen::Index>(count));
-  Eigen::MatrixXd grad(static_cast<Eigen::Index>(count), dim);
-  Eigen::MatrixXd newton(dim, dim);
+  // Each constraint touches only its own contact, so the constraint Jacobian
+  // is stored as one 3-vector per contact rather than a mostly empty matrix.
+  // Every product it appears in is then linear in the number of contacts.
+  std::vector<Vector3> gradient(count, Vector3::Zero());
   Eigen::VectorXd residual(dim);
 
+  // The Newton matrix couples two contacts only when they share a body, so it
+  // inherits the Hessian's sparsity. The pattern never changes across Newton
+  // steps, so it is analyzed once and only the values are refilled.
+  std::vector<Eigen::Triplet<Scalar>> base_triplets;
+  for (Eigen::Index col = 0; col < dim; ++col) {
+    for (Eigen::Index row = 0; row < dim; ++row) {
+      if (problem.hessian(row, col) != 0.0) {
+        base_triplets.emplace_back(row, col, problem.hessian(row, col));
+      }
+    }
+  }
+  // Only the per-contact diagonal blocks change between Newton steps, so the
+  // matrix is built once and those entries are then written in place.
+  for (std::size_t e = 0; e < count; ++e) {
+    Eigen::Index const base_index = static_cast<Eigen::Index>(3 * e);
+    for (Eigen::Index j = 0; j < 3; ++j) {
+      for (Eigen::Index i = 0; i < 3; ++i) {
+        base_triplets.emplace_back(base_index + i, base_index + j, 0.0);
+      }
+    }
+  }
+  Eigen::SparseMatrix<Scalar> newton(dim, dim);
+  newton.setFromTriplets(base_triplets.begin(), base_triplets.end());
+  newton.makeCompressed();
+
+  std::vector<Matrix3> hessian_diagonal(count);
+  std::vector<Eigen::Index> diagonal_index(9 * count, -1);
+  for (std::size_t e = 0; e < count; ++e) {
+    Eigen::Index const base_index = static_cast<Eigen::Index>(3 * e);
+    hessian_diagonal[e] = problem.hessian.block<3, 3>(base_index, base_index);
+    for (Eigen::Index j = 0; j < 3; ++j) {
+      for (Eigen::Index i = 0; i < 3; ++i) {
+        for (Eigen::Index k = newton.outerIndexPtr()[base_index + j];
+             k < newton.outerIndexPtr()[base_index + j + 1]; ++k) {
+          if (newton.innerIndexPtr()[k] == base_index + i) {
+            diagonal_index[9 * e + 3 * j + i] = k;
+            break;
+          }
+        }
+      }
+    }
+  }
+
+  Eigen::SimplicialLLT<Eigen::SparseMatrix<Scalar>> llt;
+  llt.analyzePattern(newton);
+
   auto refresh = [&]() {
-    grad.setZero();
+    residual = problem.hessian * forces + problem.linear;
     for (std::size_t e = 0; e < count; ++e) {
       Eigen::Index const row = static_cast<Eigen::Index>(e);
       slack[row] = -constraint(forces, e, problem.friction[e], problem.eps);
-      grad.block<1, 3>(row, static_cast<Eigen::Index>(3 * e)) =
-        constraint_grad(forces, e, problem.friction[e], problem.eps)
-          .transpose();
+      gradient[e] =
+        constraint_grad(forces, e, problem.friction[e], problem.eps);
+      residual.segment<3>(static_cast<Eigen::Index>(3 * e)) +=
+        multiplier[row] * gradient[e];
     }
-    residual = problem.hessian * forces + problem.linear +
-      grad.transpose() * multiplier;
   };
 
   // Largest step that keeps every cone and every multiplier strictly positive.
@@ -145,18 +195,21 @@ posegen_force_solver_stats_t solve_cone_qp(
     }
 
     // Condensed Newton matrix, shared by the predictor and the corrector.
-    newton = problem.hessian;
     for (std::size_t e = 0; e < count; ++e) {
       Eigen::Index const row = static_cast<Eigen::Index>(e);
-      newton.block<3, 3>(
-        static_cast<Eigen::Index>(3 * e),
-        static_cast<Eigen::Index>(3 * e)) +=
-        multiplier[row] * constraint_hess(forces, e, problem.eps);
+      Matrix3 const block = hessian_diagonal[e] +
+        multiplier[row] * constraint_hess(forces, e, problem.eps) +
+        (multiplier[row] / slack[row]) * gradient[e] *
+          gradient[e].transpose();
+      for (Eigen::Index j = 0; j < 3; ++j) {
+        for (Eigen::Index i = 0; i < 3; ++i) {
+          newton.valuePtr()[diagonal_index[9 * e + 3 * j + i]] =
+            block(i, j);
+        }
+      }
     }
-    newton.noalias() += grad.transpose() *
-      (multiplier.array() / slack.array()).matrix().asDiagonal() * grad;
 
-    Eigen::LLT<Eigen::MatrixXd> const llt {newton};
+    llt.factorize(newton);
     if (llt.info() != Eigen::Success) {
       return stats;
     }
@@ -164,12 +217,19 @@ posegen_force_solver_stats_t solve_cone_qp(
       -(problem.hessian * forces + problem.linear);
 
     auto direction = [&](Scalar barrier) {
-      Eigen::VectorXd const rhs = barrier > 0.0
-        ? (base - grad.transpose() *
-            (barrier * slack.array().inverse()).matrix()).eval()
-        : base;
+      Eigen::VectorXd rhs = base;
+      if (barrier > 0.0) {
+        for (std::size_t e = 0; e < count; ++e) {
+          rhs.segment<3>(static_cast<Eigen::Index>(3 * e)) -=
+            (barrier / slack[static_cast<Eigen::Index>(e)]) * gradient[e];
+        }
+      }
       Eigen::VectorXd const d_force = llt.solve(rhs);
-      Eigen::VectorXd const d_slack = -(grad * d_force);
+      Eigen::VectorXd d_slack(static_cast<Eigen::Index>(count));
+      for (std::size_t e = 0; e < count; ++e) {
+        d_slack[static_cast<Eigen::Index>(e)] = -gradient[e].dot(
+          d_force.segment<3>(static_cast<Eigen::Index>(3 * e)));
+      }
       Eigen::VectorXd const d_multiplier =
         ((barrier - (multiplier.array() * slack.array()) -
           multiplier.array() * d_slack.array()) /
