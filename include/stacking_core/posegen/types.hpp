@@ -17,7 +17,7 @@ struct posegen_trust_region_config_t {
   Scalar delta_lower_thresh = 0.25;
   Scalar delta_upper_thresh = 0.75;
   Scalar improvement_thresh = 0.125;
-  Scalar tol = 1e-12;
+  Scalar tol = 1e-8;
 };
 
 struct posegen_hausdorff_config_t {
@@ -69,8 +69,8 @@ struct posegen_force_solver_config_t {
   Scalar beta_consensus = 1.0;
   Scalar beta_contact = 1.0;
   int beta_update_interval = 20;
-  Scalar tol_abs = 1e-3;
-  Scalar tol_rel = 1e-4;
+  Scalar tol_abs = 1e-4;
+  Scalar tol_rel = 1e-5;
 };
 
 struct posegen_config_t {

@@ -123,15 +123,16 @@ void require_solver_stats(
   require(std::isfinite(solver.force_solver.dual_residual));
 }
 
-// The reference values below were produced by diffsim, so they are pinned to
-// diffsim's own configuration rather than to whatever stacking-core currently
-// defaults to. stacking-core's defaults follow its consumers and may move
-// independently; these three fields are the ones that have diverged.
+// The reference values below were produced by diffsim, so every field where
+// stacking-core's default has since moved is pinned back to diffsim's value
+// here rather than relying on the two happening to agree. stacking-core's
+// defaults follow its consumers and its own measurements, and may move again.
 posegen_config_t diffsim_reference_config() {
   posegen_config_t config;
-  config.trust_region.tol = 1e-8;
   config.objective.eps_target = 5e-1;
   config.objective.k_potential = 1.0;
+  config.force_solver.tol_abs = 1e-3;
+  config.force_solver.tol_rel = 1e-4;
   return config;
 }
 

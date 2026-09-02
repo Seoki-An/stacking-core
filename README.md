@@ -293,10 +293,21 @@ behavior uses the intended contact-frame normal column, correcting diffsim's
 invalid `col(-1)` cone-gradient access, and the cone KKT force gradient is
 divided by the smoothed tangential magnitude rather than by one built from a
 tangent and the normal. Both corrections only move contacts that carry
-tangential load. Default objective and trust-region values follow the
-`stacking-planner` and `stacking-tabletop` workflows where those agree
-(`eps_target`, `k_potential`, and the trust-region tolerance); parameters those
-projects set per robot scale, such as `eps_gap`, `eps_comp`, `k_box`, and
-`w_box`, keep their scale-neutral values and remain the consumer's choice. The
-point-cloud posegen variant and the deprecated `poseinit` module are not part
-of stacking-core.
+tangential load. Default objective values follow the `stacking-planner` and
+`stacking-tabletop` workflows where those agree (`eps_target`, `k_potential`);
+parameters those projects set per robot scale, such as `eps_gap`, `eps_comp`,
+`k_box`, and `w_box`, keep their scale-neutral values and remain the consumer's
+choice.
+
+The force-solver tolerance is tighter than diffsim's, at `tol_abs = 1e-4`.
+Contact forces feed the pose gradient directly, and at diffsim's `1e-3` they
+carry percent-level error, which the trust region then spends iterations
+chasing. The trust-region tolerance stays at diffsim's `1e-8` rather than the
+`1e-12` both consumers use: `1e-12` exits only when the trust region collapses,
+which an accurate gradient does not cause, so the two settings have to be
+chosen together. Measured over contact chains of 1-64 bodies and rows of 2-6
+contacts, the pair is faster than either the legacy or the all-tight
+combination and leaves no scene at its outer iteration limit.
+
+The point-cloud posegen variant and the deprecated `poseinit` module are not
+part of stacking-core.
