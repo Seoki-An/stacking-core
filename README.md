@@ -268,5 +268,8 @@ reuse counts.
 The implementation is numerically checked against diffsim for ground-only,
 ordinary stacking, target-containment, and multi-contact cases. Boundary
 behavior uses the intended contact-frame normal column, correcting diffsim's
-invalid `col(-1)` cone-gradient access. The point-cloud posegen variant and the
-deprecated `poseinit` module are not part of stacking-core.
+invalid `col(-1)` cone-gradient access, and the cone KKT force gradient is
+divided by the smoothed tangential magnitude rather than by one built from a
+tangent and the normal. Both corrections only move contacts that carry
+tangential load. The point-cloud posegen variant and the deprecated `poseinit`
+module are not part of stacking-core.

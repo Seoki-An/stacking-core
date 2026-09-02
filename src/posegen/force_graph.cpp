@@ -22,9 +22,13 @@ Vector4 project_cone(Vector4 const& f, Scalar friction) {
   return out;
 }
 
+// Gradient of the smoothed friction cone that project_cone() enforces,
+// sqrt(f_0^2 + f_1^2 + eps^2) - friction * f_2, in contact coordinates
+// ordered (tangent_first, tangent_second, normal). The denominator is the
+// smoothed tangential magnitude, so it must not mix in the normal component.
 Vector3 cone_grad(Vector3 const& f, Scalar friction, Scalar eps) {
   Vector3 out;
-  out << f.head<2>() / Vector3 {f[1], f[2], eps}.norm(), -friction;
+  out << f.head<2>() / Vector3 {f[0], f[1], eps}.norm(), -friction;
   return out;
 }
 

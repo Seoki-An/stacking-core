@@ -262,22 +262,26 @@ int main() {
     .targets = {},
     .boundaries = {EntityId {2}},
   });
-  // This locks the corrected cone KKT derivative. The legacy diffsim result
-  // is intentionally not the oracle because eval.cpp selected Eigen col(-1).
+  // This locks both corrected cone KKT derivatives. The legacy diffsim result
+  // is intentionally not the oracle because eval.cpp selected Eigen col(-1)
+  // for the cone pose gradient, and divided the cone force gradient by a
+  // magnitude built from one tangent and the normal instead of both tangents.
+  // Only this case moves: the others settle into near-normal contacts, where
+  // the tangential numerator vanishes and both forms agree.
   require_pose_near(
     boundary.optimal_pose,
     Vector3 {
-      1.1209174444262937,
-      -0.0014323916295100895,
-      0.40725845225930385},
+      1.0458150563825335,
+      -0.00080235114879420599,
+      0.40675094064777667},
     Quaternion {
-      0.99999544344813696,
-      9.9253211727880233e-8,
-      1.0141455644111353e-7,
-      0.0030187883238165913},
+      0.99976330704095429,
+      2.78079000345705e-5,
+      7.912251342998839e-5,
+      0.021755984484352654},
     2e-6);
-  require(std::abs(boundary.c_feq - 0.0047170658649495923) < 1e-9);
-  require(std::abs(boundary.c_gap - 0.10274235245269242) < 1e-8);
+  require(std::abs(boundary.c_feq - 0.0062673909671058861) < 1e-9);
+  require(std::abs(boundary.c_gap - 0.10325035190866688) < 1e-8);
   require_solver_stats(boundary, config);
 
   bool rejected_candidate = false;
