@@ -11,13 +11,24 @@ endif()
 list(APPEND CMAKE_PREFIX_PATH "${nanobind_cmake_dir}")
 find_package(nanobind CONFIG REQUIRED)
 
-nanobind_add_module(stacking-core-python bindings.cpp)
+nanobind_add_module(
+  stacking-core-python
+  bindings.cpp
+  bindings_simulation.cpp
+  bindings_scene.cpp
+  bindings_kinematics.cpp
+  bindings_planner_types.cpp
+  bindings_planner_grasp.cpp
+  bindings_planner_motion.cpp
+  bindings_planner_pick_place.cpp
+)
 target_compile_features(stacking-core-python PRIVATE cxx_std_20)
 target_link_libraries(
   stacking-core-python
   PRIVATE
     stacking-core-simulation
     stacking-core-posegen
+    stacking-core-planner
 )
 set(
   STACKING_CORE_PYTHON_OUTPUT_DIR
@@ -42,6 +53,10 @@ configure_file(
   test_bindings.py
   "${PROJECT_BINARY_DIR}/python/test_bindings.py"
   COPYONLY
+)
+file(
+  COPY "${PROJECT_SOURCE_DIR}/test/planner/assets"
+  DESTINATION "${PROJECT_BINARY_DIR}/python"
 )
 
 set(
