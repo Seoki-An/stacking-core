@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <memory>
 #include <stdexcept>
 #include <utility>
@@ -190,6 +191,20 @@ NB_MODULE(_native, module) {
       .def_rw("model", &simulation_contact_config_t::model)
       .def_rw("error_reduction_ratio",
               &simulation_contact_config_t::error_reduction_ratio)
+      .def_prop_rw(
+          "body_error_reduction_ratio",
+          [](simulation_contact_config_t const &config) {
+            return entity_map(config.body_error_reduction_ratio);
+          },
+          [](simulation_contact_config_t &config, nb::dict const &values) {
+            std::map<EntityId, Scalar> ratios;
+            for (auto const &[key, value] : values) {
+              ratios.emplace(
+                  EntityId{nb::cast<std::uint64_t>(key)},
+                  nb::cast<Scalar>(value));
+            }
+            config.body_error_reduction_ratio = std::move(ratios);
+          })
       .def_rw("detection_margin",
               &simulation_contact_config_t::detection_margin)
       .def_rw("patch_eps", &simulation_contact_config_t::patch_eps)

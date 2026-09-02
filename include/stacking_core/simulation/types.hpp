@@ -3,6 +3,7 @@
 #include <stacking_core/contact.hpp>
 #include <stacking_core/scene/snapshot.hpp>
 
+#include <map>
 #include <memory>
 #include <vector>
 
@@ -33,6 +34,11 @@ struct simulation_contact_config_t {
   simulation_contact_model_e model =
     simulation_contact_model_e::single_point;
   Scalar error_reduction_ratio = 0.2;
+  // Per-body override of error_reduction_ratio. A contact uses the larger of
+  // its two bodies' ratios, so a group of bodies only loses penetration
+  // correction among themselves; contacts against unlisted bodies keep the
+  // default. Bodies absent from the map use error_reduction_ratio.
+  std::map<EntityId, Scalar> body_error_reduction_ratio;
   Scalar detection_margin = 0.1;
   Scalar patch_eps = 1e-3;
   Scalar patch_damping = 1e-10;

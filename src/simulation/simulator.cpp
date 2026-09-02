@@ -45,6 +45,27 @@ void validate_config(simulation_config_t const& config) {
       config.contact.projection.friction_ratio_thresh < 0.0) {
     throw std::invalid_argument("invalid simulation configuration");
   }
+  for (auto const& [id, ratio] : config.contact.body_error_reduction_ratio) {
+    (void)id;
+    if (!std::isfinite(ratio) || ratio < 0.0 || ratio > 1.0) {
+      throw std::invalid_argument(
+        "invalid per-body error reduction ratio");
+    }
+  }
+}
+
+// diffsim's pair rule: the larger of the two bodies' ratios.
+Scalar contact_error_reduction_ratio(
+  simulation_contact_config_t const& config,
+  EntityId first,
+  EntityId second) {
+  auto ratio_of = [&](EntityId id) {
+    auto const found = config.body_error_reduction_ratio.find(id);
+    return found == config.body_error_reduction_ratio.end()
+      ? config.error_reduction_ratio
+      : found->second;
+  };
+  return std::max(ratio_of(first), ratio_of(second));
 }
 
 Vector6 vectorized(motion_t const& motion) {
@@ -234,7 +255,8 @@ constraint_factor_t make_contact_factor(
   }
 
   vector_x_t error = vector_x_t::Zero(dim);
-  error[2] = config.contact.error_reduction_ratio * contact.feature.gap;
+  error[2] = contact_error_reduction_ratio(
+    config.contact, body_1.id(), body_2.id()) * contact.feature.gap;
   constraint_factor_t factor {
     .id = factor_id_t {
       .kind = use_4d

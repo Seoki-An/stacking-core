@@ -19,6 +19,92 @@ void require(
   }
 }
 
+stacking_core::Matrix3X octahedron(stacking_core::Scalar radius) {
+  using namespace stacking_core;
+  Matrix3X nodes(3, 6);
+  nodes.col(0) = radius * Vector3::UnitX();
+  nodes.col(1) = -radius * Vector3::UnitX();
+  nodes.col(2) = radius * Vector3::UnitY();
+  nodes.col(3) = -radius * Vector3::UnitY();
+  nodes.col(4) = radius * Vector3::UnitZ();
+  nodes.col(5) = -radius * Vector3::UnitZ();
+  return nodes;
+}
+
+std::shared_ptr<stacking_core::BodyModel const> penetrating_model() {
+  using namespace stacking_core;
+  std::vector<geometry_config_t> geometries;
+  geometries.push_back(dsf_vert_geometry_config_t {
+    .properties = geometry_properties_t {
+      .id = GeometryId {4},
+      .body_from_geometry = pose_t {},
+      .material = material_t {.friction = 0.6},
+    },
+    .nodes = octahedron(0.5),
+    .sharpness = 20,
+  });
+  return std::make_shared<BodyModel>(body_model_config_t {
+    .id = BodyModelId {4},
+    .inertial = inertial_t {
+      .body_from_inertial = pose_t {},
+      .mass = 2.0,
+      .inertia = Vector3 {0.4, 0.6, 0.8}.asDiagonal(),
+    },
+    .geometries = std::move(geometries),
+  });
+}
+
+std::shared_ptr<stacking_core::BodyModel const> ground_model() {
+  using namespace stacking_core;
+  std::vector<geometry_config_t> geometries;
+  geometries.push_back(plane_geometry_config_t {
+    .properties = geometry_properties_t {
+      .id = GeometryId {5},
+      .body_from_geometry = pose_t {},
+      .material = material_t {.friction = 0.6},
+    },
+  });
+  return std::make_shared<BodyModel>(body_model_config_t {
+    .id = BodyModelId {5},
+    .inertial = std::nullopt,
+    .geometries = std::move(geometries),
+  });
+}
+
+// A body penetrating the ground by 10 mm, at rest.
+stacking_core::SceneSnapshot penetrating_scene() {
+  using namespace stacking_core;
+  std::vector<BodyInstance> bodies;
+  bodies.emplace_back(body_instance_config_t {
+    .id = EntityId {10},
+    .model = ground_model(),
+    .frame_from_body = pose_t {},
+    .motion = motion_t {},
+    .mobility = mobility_e::static_body,
+  });
+  bodies.emplace_back(body_instance_config_t {
+    .id = EntityId {11},
+    .model = penetrating_model(),
+    .frame_from_body = pose_t {
+      Vector3 {0.0, 0.0, 0.49}, Quaternion::Identity()},
+    .motion = motion_t {},
+    .mobility = mobility_e::dynamic,
+  });
+  return SceneSnapshot {scene_snapshot_config_t {
+    .frame = FrameId {1},
+    .bodies = std::move(bodies),
+  }};
+}
+
+stacking_core::Scalar separation_speed(
+  stacking_core::simulation_config_t config) {
+  using namespace stacking_core;
+  Simulator simulator {std::move(config)};
+  SceneSnapshot const scene = penetrating_scene();
+  simulation_result_t const result = simulator.step(scene, 0.01);
+  return result.snapshot->body(EntityId {11}).motion().linear.z();
+}
+
 std::shared_ptr<stacking_core::BodyModel const> model_without_inertial() {
   using namespace stacking_core;
   std::vector<geometry_config_t> geometries;
@@ -147,4 +233,32 @@ int main() {
     rejected_missing_inertial = true;
   }
   require(rejected_missing_inertial);
+
+  // Per-body error_reduction_ratio: a contact uses the larger of its two
+  // bodies' ratios, so overriding only one body leaves the contact unchanged.
+  simulation_config_t erp_config;
+  Scalar const default_speed = separation_speed(erp_config);
+  require(default_speed > 0.0);
+
+  simulation_config_t one_override = erp_config;
+  one_override.contact.body_error_reduction_ratio.emplace(EntityId {11}, 0.0);
+  require(separation_speed(one_override) == default_speed);
+
+  simulation_config_t both_override = one_override;
+  both_override.contact.body_error_reduction_ratio.emplace(EntityId {10}, 0.0);
+  require(separation_speed(both_override) < default_speed);
+
+  simulation_config_t raised = erp_config;
+  raised.contact.body_error_reduction_ratio.emplace(EntityId {10}, 1.0);
+  require(separation_speed(raised) > default_speed);
+
+  bool rejected_body_ratio = false;
+  try {
+    simulation_config_t invalid = erp_config;
+    invalid.contact.body_error_reduction_ratio.emplace(EntityId {10}, 1.5);
+    (void)Simulator {invalid};
+  } catch (std::invalid_argument const&) {
+    rejected_body_ratio = true;
+  }
+  require(rejected_body_ratio);
 }
