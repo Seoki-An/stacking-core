@@ -28,9 +28,10 @@ namespace stacking_core {
     motion_robot_t robot;
     gripper_model_t gripper;
 
-    // Empty means that the direct planner owns sampling and joint-space
-    // refinement. Supplying candidates is useful when a consumer maintains a
-    // grasp cache or applies an application-specific generator.
+    // Empty means that the direct planner owns pose-space sampling followed by
+    // pick/place IK reachability filtering. Supplying candidates is useful
+    // when a consumer maintains a grasp cache or applies an
+    // application-specific generator.
     std::vector<joint_grasp_candidate_t> grasp_candidates;
   };
 

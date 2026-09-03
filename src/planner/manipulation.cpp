@@ -221,6 +221,66 @@ namespace stacking_core {
                });
     }
 
+    pose_t phase_grasp_pose(
+      phase_scene_t const& ref, phase_scene_t const& phase,
+      pose_t const& frame_from_grasp) {
+      pose_t const phase_from_ref = compose(
+        phase.scene.body(phase.target).frameFromBody(),
+        inverse(ref.scene.body(ref.target).frameFromBody()));
+      return compose(phase_from_ref, frame_from_grasp);
+    }
+
+    std::optional<joint_grasp_candidate_t> resolve_grasp_ik(
+      direct_plan_problem_t const& problem, grasp_candidate_t candidate,
+      direct_plan_config_t const& config, planner_failure_t& failure) {
+      std::vector<Eigen::VectorXd> positions;
+      positions.reserve(2);
+      for (phase_scene_t const* phase : {&problem.pick, &problem.place}) {
+        pose_t const frame_from_grasp = phase_grasp_pose(
+          problem.pick, *phase, candidate.grasp.frame_from_grasp);
+        pose_t const frame_from_link = compose(
+          frame_from_grasp, inverse(problem.robot.link_from_tool));
+        KinematicState state = problem.robot.initial_state;
+        inverse_kinematics_config_t ik_config = config.inverse_kinematics;
+        if (problem.robot.ik_initializer) {
+          std::optional<Eigen::VectorXd> const initialized =
+            problem.robot.ik_initializer(
+              state, problem.robot.tool_link, frame_from_link);
+          if (
+            !initialized.has_value() ||
+            initialized->size() != state.positions().size() ||
+            !initialized->allFinite()) {
+            failure = planner_failure_t {
+              .code = "direct_grasp_ik_initializer_failed",
+              .message = "direct grasp IK initializer returned an invalid seed",
+              .retryable = true,
+            };
+            return std::nullopt;
+          }
+          state.setPositions(*initialized);
+          ik_config.initialization =
+            inverse_kinematics_initialization_e::provided;
+        }
+        inverse_kinematics_result_t const ik = solve_inverse_kinematics(
+          inverse_kinematics_problem_t {
+            .initial_state = std::move(state),
+            .link = problem.robot.tool_link,
+            .frame_from_link = frame_from_link,
+            .position_only = false,
+          },
+          ik_config);
+        if (ik.status != solve_status_e::success) {
+          failure = ik.failure;
+          return std::nullopt;
+        }
+        positions.push_back(ik.positions);
+      }
+      return joint_grasp_candidate_t {
+        .grasp = std::move(candidate),
+        .positions = std::move(positions),
+      };
+    }
+
     std::optional<joint_grasp_candidate_t> simulation_refine(
       direct_plan_problem_t const& problem,
       joint_grasp_candidate_t const& candidate,
@@ -239,29 +299,10 @@ namespace stacking_core {
         failure = simulated.failure;
         return std::nullopt;
       }
-      std::vector<KinematicState> states(2, problem.robot.initial_state);
-      states[0].setPositions(candidate.positions[0]);
-      states[1].setPositions(candidate.positions[1]);
-      joint_grasp_result_t refined = solve_joint_grasp(
-        joint_grasp_problem_t {
-          .grasp =
-            grasp_problem_t {
-              .phases = {problem.pick, problem.place},
-              .gripper = problem.gripper,
-              .seed = simulated.grasp,
-            },
-          .initial_states = std::move(states),
-          .grasp_link = problem.robot.tool_link,
-          .link_from_grasp = problem.robot.link_from_tool,
-        },
-        config.grasp_generation);
-      if (
-        refined.status != solve_status_e::success ||
-        refined.selected_candidate() == nullptr) {
-        failure = refined.failure;
-        return std::nullopt;
-      }
-      return *refined.selected_candidate();
+      grasp_candidate_t refined = candidate.grasp;
+      refined.grasp = simulated.grasp;
+      return resolve_grasp_ik(
+        problem, std::move(refined), config, failure);
     }
 
     struct direct_candidate_result_t {
@@ -485,24 +526,50 @@ namespace stacking_core {
       }
       grasp_sampling_config_t sampling_config = config.grasp_sampling;
       sampling_config.worker_count = config.worker_count;
-      joint_grasp_result_t sampled = sample_joint_grasps(
-        joint_grasp_sampling_problem_t {
-          .grasp =
-            grasp_sampling_problem_t {
-              .phases = {problem.pick, problem.place},
-              .gripper = problem.gripper,
-            },
-          .initial_states =
-            {problem.robot.initial_state, problem.robot.initial_state},
-          .grasp_link = problem.robot.tool_link,
-          .link_from_grasp = problem.robot.link_from_tool,
-          .ik_initializer = problem.robot.ik_initializer,
+      grasp_result_t sampled = sample_grasps(
+        grasp_sampling_problem_t {
+          .phases = {problem.pick, problem.place},
+          .gripper = problem.gripper,
         },
-        sampling_config, config.grasp_generation,
-        config.inverse_kinematics);
+        sampling_config, config.grasp_generation);
       failure = sampled.failure;
       status = sampled.status;
-      return std::move(sampled.candidates);
+      if (status == solve_status_e::invalid_problem) {
+        return {};
+      }
+
+      std::vector<joint_grasp_candidate_t> reachable;
+      reachable.reserve(sampled.candidates.size());
+      for (grasp_candidate_t& candidate : sampled.candidates) {
+        if (!candidate.failure.code.empty()) {
+          continue;
+        }
+        planner_failure_t ik_failure;
+        std::optional<joint_grasp_candidate_t> resolved = resolve_grasp_ik(
+          problem, std::move(candidate), config, ik_failure);
+        if (resolved.has_value()) {
+          reachable.push_back(std::move(*resolved));
+          continue;
+        }
+        if (!ik_failure.retryable) {
+          failure = std::move(ik_failure);
+          status = solve_status_e::invalid_problem;
+          return {};
+        }
+        failure = std::move(ik_failure);
+      }
+      if (reachable.empty()) {
+        status = solve_status_e::infeasible;
+        failure = planner_failure_t {
+          .code = "sampled_grasps_unreachable",
+          .message = "no pose-space grasp was reachable at pick and place",
+          .retryable = true,
+        };
+      } else {
+        status = solve_status_e::success;
+        failure = {};
+      }
+      return reachable;
     }
 
   }  // namespace
