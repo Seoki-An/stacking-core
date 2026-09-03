@@ -17,6 +17,7 @@ include(GNUInstallDirs)
 
 find_package(Eigen3 3.4 REQUIRED NO_MODULE)
 find_package(tinyxml2 REQUIRED CONFIG)
+find_package(Threads REQUIRED)
 
 set(stacking_core_src_dir "${CMAKE_CURRENT_SOURCE_DIR}/src")
 

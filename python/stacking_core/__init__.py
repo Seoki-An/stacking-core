@@ -21,7 +21,7 @@ __all__ = [
     "MotionPlanningConfig", "MotionResult", "MotionRobot", "MotionWaypoint",
     "PhaseScene", "PickPlaceConfig", "PickPlaceProblem", "PlanCandidate",
     "PlanDiagnostic", "PlanResult", "PlanSegment", "PlannerFailure",
-    "PlannerSolverStats", "PlanningStage", "PoseGenerator", "PosegenConfig",
+    "PlannerSolverStats", "PlannerTimings", "PlanningStage", "PoseGenerator", "PosegenConfig",
     "PosegenForceSolver", "PosegenForceSolverConfig", "PosegenForceSolverStats",
     "PosegenHausdorffConfig", "PosegenObjectiveConfig", "PosegenProblem",
     "PosegenResult", "PosegenSolverStats", "PosegenTrustRegionConfig",

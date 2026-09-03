@@ -27,7 +27,8 @@ void bind_planner_pick_place(nb::module_ &module) {
       .def_rw("target_rot_tol", &direct_plan_config_t::target_rot_tol)
       .def_rw("move_steps", &direct_plan_config_t::move_steps)
       .def_rw("grasp_steps", &direct_plan_config_t::grasp_steps)
-      .def_rw("max_candidates", &direct_plan_config_t::max_candidates);
+      .def_rw("max_candidates", &direct_plan_config_t::max_candidates)
+      .def_rw("worker_count", &direct_plan_config_t::worker_count);
 
   nb::class_<inhand_plan_config_t>(module, "InhandPlanConfig")
       .def(nb::init<>())
@@ -52,7 +53,8 @@ void bind_planner_pick_place(nb::module_ &module) {
       .def_rw("move_steps", &regrasp_config_t::move_steps)
       .def_rw("grasp_steps", &regrasp_config_t::grasp_steps)
       .def_rw("yaw_samples", &regrasp_config_t::yaw_samples)
-      .def_rw("max_candidates", &regrasp_config_t::max_candidates);
+      .def_rw("max_candidates", &regrasp_config_t::max_candidates)
+      .def_rw("worker_count", &regrasp_config_t::worker_count);
 
   nb::class_<pick_place_config_t>(module, "PickPlaceConfig")
       .def(nb::init<>())

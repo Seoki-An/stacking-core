@@ -55,6 +55,19 @@ void bind_planner_types(nb::module_ &module) {
       .def_rw("objective", &planner_solver_stats_t::objective)
       .def_rw("grad_norm", &planner_solver_stats_t::grad_norm);
 
+  nb::class_<planner_timings_t>(module, "PlannerTimings")
+      .def(nb::init<>())
+      .def_rw("grasp_generation_seconds",
+              &planner_timings_t::grasp_generation_seconds)
+      .def_rw("simulation_refinement_seconds",
+              &planner_timings_t::simulation_refinement_seconds)
+      .def_rw("trajectory_optimization_seconds",
+              &planner_timings_t::trajectory_optimization_seconds)
+      .def_rw("total_seconds", &planner_timings_t::total_seconds)
+      .def_rw("grasp_candidates", &planner_timings_t::grasp_candidates)
+      .def_rw("refined_candidates", &planner_timings_t::refined_candidates)
+      .def_rw("motion_candidates", &planner_timings_t::motion_candidates);
+
   nb::class_<geometry_instance_id_t>(module, "GeometryInstanceId")
       .def(nb::new_([](std::uint64_t entity, std::uint64_t geometry) {
              return geometry_instance_id_t{
@@ -205,7 +218,8 @@ void bind_planner_types(nb::module_ &module) {
       .def_rw("status", &plan_result_t::status)
       .def_rw("candidates", &plan_result_t::candidates)
       .def_rw("selected_index", &plan_result_t::selected_index)
-      .def_rw("failure", &plan_result_t::failure);
+      .def_rw("failure", &plan_result_t::failure)
+      .def_rw("timings", &plan_result_t::timings);
 }
 
 } // namespace stacking_core::python

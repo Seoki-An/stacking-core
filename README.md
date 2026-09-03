@@ -213,6 +213,17 @@ same trajectory representation. A `plan_result_t` stores self-contained
 candidates and a selected index instead of duplicating the selected plan into
 parallel result arrays.
 
+Grasp-seed optimization, pick/place IK, grasp simulation refinement, direct
+candidate attempts, and independent regrasp legs use an atomic work queue.
+Set `direct_plan_config_t::worker_count` and
+`regrasp_config_t::worker_count` to `1` for serial execution, to a positive
+worker limit, or to `0` to use the available hardware concurrency. Dependent
+motion segments within one candidate remain sequential. Results are collected
+by candidate index and stably ranked by score, so scheduling does not define
+the returned order. `plan_result_t::timings` reports wall time and workload
+counts for grasp generation, simulation refinement, and trajectory
+optimization.
+
 ## Simulation state evolution
 
 `Simulator` consumes an immutable `SceneSnapshot` and returns the next owned

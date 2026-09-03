@@ -18,7 +18,9 @@ add_subdirectory(grasp)
 target_compile_features(stacking-core-planner PUBLIC cxx_std_20)
 target_link_libraries(
   stacking-core-planner
-  PUBLIC stacking-core-core
+  PUBLIC
+    stacking-core-core
+    Threads::Threads
 )
 set_target_properties(
   stacking-core-planner

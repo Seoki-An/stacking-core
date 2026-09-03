@@ -41,6 +41,14 @@ namespace stacking_core {
     // Optional preferred gripper-Z direction for a nominal parallel-jaw seed.
     // Zero derives the frame from the first and last target orientations.
     Vector3 preferred_parallel_axis = Vector3::Zero();
+
+    // Zero selects the available hardware concurrency. One preserves serial
+    // execution. Positive values cap the number of seed-solving workers.
+    int worker_count = 0;
+
+    // Zero evaluates every generated seed. A positive value stops dispatching
+    // new seeds after this many distinct feasible candidates are found.
+    int max_candidates = 0;
   };
 
   struct grasp_seed_t {

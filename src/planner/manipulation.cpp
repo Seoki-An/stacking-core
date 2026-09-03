@@ -1,7 +1,11 @@
 #include <stacking_core/planner/manipulation.hpp>
 
+#include "parallel.hpp"
+
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <memory>
 #include <optional>
@@ -11,6 +15,13 @@
 
 namespace stacking_core {
   namespace {
+
+    using planner_clock_t = std::chrono::steady_clock;
+
+    Scalar elapsed_seconds(planner_clock_t::time_point start) {
+      return std::chrono::duration<Scalar>(planner_clock_t::now() - start)
+        .count();
+    }
 
     plan_result_t invalid_result(std::string code, std::string message) {
       return plan_result_t {
@@ -23,6 +34,7 @@ namespace stacking_core {
             .message = std::move(message),
             .retryable = false,
           },
+        .timings = {},
       };
     }
 
@@ -38,7 +50,7 @@ namespace stacking_core {
         std::isfinite(config.target_pos_tol) && config.target_pos_tol >= 0.0 &&
         std::isfinite(config.target_rot_tol) && config.target_rot_tol >= 0.0 &&
         config.move_steps >= 2 && config.grasp_steps >= 2 &&
-        config.max_candidates >= 1;
+        config.max_candidates >= 1 && config.worker_count >= 0;
     }
 
     bool valid_inhand_config(inhand_plan_config_t const& config) {
@@ -252,108 +264,28 @@ namespace stacking_core {
       return *refined.selected_candidate();
     }
 
-    std::vector<joint_grasp_candidate_t> direct_grasps(
-      direct_plan_problem_t const& problem, direct_plan_config_t const& config,
-      planner_failure_t& failure, solve_status_e& status) {
-      if (!problem.grasp_candidates.empty()) {
-        status = solve_status_e::success;
-        return problem.grasp_candidates;
-      }
-      joint_grasp_result_t sampled = sample_joint_grasps(
-        joint_grasp_sampling_problem_t {
-          .grasp =
-            grasp_sampling_problem_t {
-              .phases = {problem.pick, problem.place},
-              .gripper = problem.gripper,
-            },
-          .initial_states =
-            {problem.robot.initial_state, problem.robot.initial_state},
-          .grasp_link = problem.robot.tool_link,
-          .link_from_grasp = problem.robot.link_from_tool,
-          .ik_initializer = problem.robot.ik_initializer,
-        },
-        config.grasp_sampling, config.grasp_generation,
-        config.inverse_kinematics);
-      failure = sampled.failure;
-      status = sampled.status;
-      return std::move(sampled.candidates);
-    }
-
-  }  // namespace
-
-  plan_result_t solve_direct(
-    direct_plan_problem_t const& problem, direct_plan_config_t const& config) {
-    if (!valid_direct_config(config)) {
-      return invalid_result(
-        "invalid_direct_config", "direct config is invalid");
-    }
-    if (!valid_phase(problem.pick) || !valid_phase(problem.place)) {
-      return invalid_result(
-        "invalid_direct_phase", "pick and place must contain their targets");
-    }
-    if (
-      problem.pick.scene.frame() != problem.place.scene.frame() ||
-      problem.pick.scene.frame() != problem.robot.initial_state.frame()) {
-      return invalid_result(
-        "direct_frame_mismatch", "pick, place, and robot must share one frame");
-    }
-    BodyInstance const& pick_target =
-      problem.pick.scene.body(problem.pick.target);
-    BodyInstance const& place_target =
-      problem.place.scene.body(problem.place.target);
-    if (pick_target.model().id() != place_target.model().id()) {
-      return invalid_result(
-        "direct_target_model_mismatch",
-        "pick and place targets must share a body model");
-    }
-
-    planner_failure_t grasp_failure;
-    solve_status_e grasp_status = solve_status_e::infeasible;
-    std::vector<joint_grasp_candidate_t> grasps =
-      direct_grasps(problem, config, grasp_failure, grasp_status);
-    if (grasp_status == solve_status_e::invalid_problem) {
-      return invalid_result(grasp_failure.code, grasp_failure.message);
-    }
-
-    plan_result_t out {
-      .status = solve_status_e::infeasible,
-      .candidates = {},
-      .selected_index = std::nullopt,
-      .failure =
-        planner_failure_t {
-          .code = "direct_grasp_generation",
-          .message = grasp_failure.message.empty()
-            ? "no common pick/place grasp was feasible"
-            : grasp_failure.message,
-          .retryable = true,
-        },
+    struct direct_candidate_result_t {
+      solve_status_e status = solve_status_e::infeasible;
+      std::optional<plan_candidate_t> candidate;
+      planner_failure_t failure;
     };
-    Eigen::Index const dof = problem.robot.initial_state.positions().size();
-    Vector3 const approach_axis = config.approach_dir_tool.normalized();
-    Eigen::VectorXd const q_home = problem.robot.initial_state.positions();
 
-    for (joint_grasp_candidate_t const& initial : grasps) {
-      if (!valid_joint_candidate(initial, dof)) {
-        continue;
-      }
-      planner_failure_t refinement_failure;
-      auto refined =
-        simulation_refine(problem, initial, config, refinement_failure);
-      if (!refined.has_value()) {
-        if (!refinement_failure.code.empty() && !refinement_failure.retryable) {
-          return invalid_result(
-            refinement_failure.code, refinement_failure.message);
-        }
-        if (!refinement_failure.code.empty()) {
-          out.failure = refinement_failure;
-        }
-        continue;
-      }
-
-      Eigen::VectorXd const& q_pick = refined->positions[0];
-      Eigen::VectorXd const& q_place = refined->positions[1];
+    direct_candidate_result_t solve_direct_candidate(
+      direct_plan_problem_t const& problem,
+      joint_grasp_candidate_t const& refined,
+      direct_plan_config_t const& config) {
+      BodyInstance const& pick_target =
+        problem.pick.scene.body(problem.pick.target);
+      BodyInstance const& place_target =
+        problem.place.scene.body(problem.place.target);
+      Vector3 const approach_axis = config.approach_dir_tool.normalized();
+      Eigen::VectorXd const q_home = problem.robot.initial_state.positions();
+      Eigen::VectorXd const& q_pick = refined.positions[0];
+      Eigen::VectorXd const& q_place = refined.positions[1];
       pose_t const grasp_pick = tool_pose_at(problem.robot, q_pick);
       pose_t const grasp_place = tool_pose_at(problem.robot, q_place);
+      direct_candidate_result_t out;
+
       for (Scalar scale : std::array<Scalar, 4> {1.0, 0.75, 0.5, 0.25}) {
         pose_t pre_pick = grasp_pick;
         pre_pick.position += scale * config.approach_distance *
@@ -373,8 +305,9 @@ namespace stacking_core {
           },
           config.motion);
         if (pick_approach.status == solve_status_e::invalid_problem) {
-          return invalid_result(
-            pick_approach.failure.code, pick_approach.failure.message);
+          out.status = solve_status_e::invalid_problem;
+          out.failure = pick_approach.failure;
+          return out;
         }
         if (pick_approach.status != solve_status_e::success) {
           out.failure = stage_failure(
@@ -391,15 +324,16 @@ namespace stacking_core {
           grasped_motion_problem_t {
             .scene = problem.pick.scene,
             .robot =
-              robot_at(problem.robot, q_at_pick, refined->grasp.grasp.opening),
+              robot_at(problem.robot, q_at_pick, refined.grasp.grasp.opening),
             .attachment = pick_attachment,
             .waypoints = {tool_waypoint(
               problem.robot, pre_pick, config.grasp_steps)},
           },
           config.motion);
         if (pick_retreat.status == solve_status_e::invalid_problem) {
-          return invalid_result(
-            pick_retreat.failure.code, pick_retreat.failure.message);
+          out.status = solve_status_e::invalid_problem;
+          out.failure = pick_retreat.failure;
+          return out;
         }
         if (pick_retreat.status != solve_status_e::success) {
           out.failure = stage_failure(
@@ -414,15 +348,16 @@ namespace stacking_core {
             .scene = problem.place.scene,
             .robot = robot_at(
               problem.robot, endpoint(pick_retreat),
-              refined->grasp.grasp.opening),
+              refined.grasp.grasp.opening),
             .attachment = place_attachment,
             .waypoints = {tool_waypoint(
               problem.robot, pre_place, config.move_steps)},
           },
           config.motion);
         if (transfer.status == solve_status_e::invalid_problem) {
-          return invalid_result(
-            transfer.failure.code, transfer.failure.message);
+          out.status = solve_status_e::invalid_problem;
+          out.failure = transfer.failure;
+          return out;
         }
         if (transfer.status != solve_status_e::success) {
           out.failure =
@@ -434,14 +369,15 @@ namespace stacking_core {
           grasped_motion_problem_t {
             .scene = problem.place.scene,
             .robot = robot_at(
-              problem.robot, endpoint(transfer), refined->grasp.grasp.opening),
+              problem.robot, endpoint(transfer), refined.grasp.grasp.opening),
             .attachment = place_attachment,
             .waypoints = {joint_waypoint(q_place, config.grasp_steps)},
           },
           config.motion);
         if (place_approach.status == solve_status_e::invalid_problem) {
-          return invalid_result(
-            place_approach.failure.code, place_approach.failure.message);
+          out.status = solve_status_e::invalid_problem;
+          out.failure = place_approach.failure;
+          return out;
         }
         std::optional<pose_t> const released_target =
           terminal_target(place_approach);
@@ -472,8 +408,9 @@ namespace stacking_core {
           },
           config.motion);
         if (place_retreat.status == solve_status_e::invalid_problem) {
-          return invalid_result(
-            place_retreat.failure.code, place_retreat.failure.message);
+          out.status = solve_status_e::invalid_problem;
+          out.failure = place_retreat.failure;
+          return out;
         }
         if (place_retreat.status != solve_status_e::success) {
           out.failure = stage_failure(
@@ -483,7 +420,7 @@ namespace stacking_core {
         set_static_target(place_retreat.trajectory, *released_target);
 
         plan_candidate_t candidate;
-        candidate.score = refined->grasp.score;
+        candidate.score = refined.grasp.score;
         candidate.segments = {
           plan_segment_t {
             .stage = planning_stage_e::pick_approach,
@@ -518,7 +455,7 @@ namespace stacking_core {
             .grasp =
               grasp_t {
                 .frame_from_grasp = tool_pose_at(problem.robot, q_at_pick),
-                .opening = refined->grasp.grasp.opening,
+                .opening = refined.grasp.grasp.opening,
               },
           },
           grasp_event_t {
@@ -528,20 +465,203 @@ namespace stacking_core {
             .grasp =
               grasp_t {
                 .frame_from_grasp = tool_pose_at(problem.robot, q_at_place),
-                .opening = refined->grasp.grasp.opening,
+                .opening = refined.grasp.grasp.opening,
               },
           }};
-        out.candidates.push_back(std::move(candidate));
-        break;
+        out.status = solve_status_e::success;
+        out.candidate = std::move(candidate);
+        out.failure = {};
+        return out;
       }
+      return out;
+    }
+
+    std::vector<joint_grasp_candidate_t> direct_grasps(
+      direct_plan_problem_t const& problem, direct_plan_config_t const& config,
+      planner_failure_t& failure, solve_status_e& status) {
+      if (!problem.grasp_candidates.empty()) {
+        status = solve_status_e::success;
+        return problem.grasp_candidates;
+      }
+      grasp_sampling_config_t sampling_config = config.grasp_sampling;
+      sampling_config.worker_count = config.worker_count;
+      joint_grasp_result_t sampled = sample_joint_grasps(
+        joint_grasp_sampling_problem_t {
+          .grasp =
+            grasp_sampling_problem_t {
+              .phases = {problem.pick, problem.place},
+              .gripper = problem.gripper,
+            },
+          .initial_states =
+            {problem.robot.initial_state, problem.robot.initial_state},
+          .grasp_link = problem.robot.tool_link,
+          .link_from_grasp = problem.robot.link_from_tool,
+          .ik_initializer = problem.robot.ik_initializer,
+        },
+        sampling_config, config.grasp_generation,
+        config.inverse_kinematics);
+      failure = sampled.failure;
+      status = sampled.status;
+      return std::move(sampled.candidates);
+    }
+
+  }  // namespace
+
+  plan_result_t solve_direct(
+    direct_plan_problem_t const& problem, direct_plan_config_t const& config) {
+    if (!valid_direct_config(config)) {
+      return invalid_result(
+        "invalid_direct_config", "direct config is invalid");
+    }
+    if (!valid_phase(problem.pick) || !valid_phase(problem.place)) {
+      return invalid_result(
+        "invalid_direct_phase", "pick and place must contain their targets");
+    }
+    if (
+      problem.pick.scene.frame() != problem.place.scene.frame() ||
+      problem.pick.scene.frame() != problem.robot.initial_state.frame()) {
+      return invalid_result(
+        "direct_frame_mismatch", "pick, place, and robot must share one frame");
+    }
+    BodyInstance const& pick_target =
+      problem.pick.scene.body(problem.pick.target);
+    BodyInstance const& place_target =
+      problem.place.scene.body(problem.place.target);
+    if (pick_target.model().id() != place_target.model().id()) {
+      return invalid_result(
+        "direct_target_model_mismatch",
+        "pick and place targets must share a body model");
+    }
+
+    planner_clock_t::time_point const total_start = planner_clock_t::now();
+    planner_clock_t::time_point const grasp_start = planner_clock_t::now();
+    planner_failure_t grasp_failure;
+    solve_status_e grasp_status = solve_status_e::infeasible;
+    std::vector<joint_grasp_candidate_t> grasps =
+      direct_grasps(problem, config, grasp_failure, grasp_status);
+    if (grasp_status == solve_status_e::invalid_problem) {
+      plan_result_t result =
+        invalid_result(grasp_failure.code, grasp_failure.message);
+      result.timings.grasp_generation_seconds = elapsed_seconds(grasp_start);
+      result.timings.total_seconds = elapsed_seconds(total_start);
+      result.timings.grasp_candidates = grasps.size();
+      return result;
+    }
+
+    plan_result_t out {
+      .status = solve_status_e::infeasible,
+      .candidates = {},
+      .selected_index = std::nullopt,
+      .failure =
+        planner_failure_t {
+          .code = "direct_grasp_generation",
+          .message = grasp_failure.message.empty()
+            ? "no common pick/place grasp was feasible"
+            : grasp_failure.message,
+          .retryable = true,
+        },
+      .timings = {},
+    };
+    out.timings.grasp_generation_seconds = elapsed_seconds(grasp_start);
+    out.timings.grasp_candidates = grasps.size();
+    Eigen::Index const dof = problem.robot.initial_state.positions().size();
+    grasps.erase(
+      std::remove_if(
+        grasps.begin(), grasps.end(),
+        [&](joint_grasp_candidate_t const& candidate) {
+          return !valid_joint_candidate(candidate, dof);
+        }),
+      grasps.end());
+    std::stable_sort(
+      grasps.begin(), grasps.end(),
+      [](
+        joint_grasp_candidate_t const& lhs,
+        joint_grasp_candidate_t const& rhs) {
+        return lhs.grasp.score > rhs.grasp.score;
+      });
+
+    planner_clock_t::time_point const refinement_start = planner_clock_t::now();
+    std::vector<std::optional<joint_grasp_candidate_t>> refined_results(
+      grasps.size());
+    std::vector<planner_failure_t> refinement_failures(grasps.size());
+    detail::planner_parallel_for(
+      grasps.size(), config.worker_count, [&](std::size_t i) {
+        refined_results[i] =
+          simulation_refine(problem, grasps[i], config, refinement_failures[i]);
+      });
+    out.timings.simulation_refinement_seconds =
+      elapsed_seconds(refinement_start);
+
+    std::vector<joint_grasp_candidate_t> refined;
+    refined.reserve(grasps.size());
+    for (std::size_t i = 0; i < refined_results.size(); ++i) {
+      if (refined_results[i].has_value()) {
+        refined.push_back(std::move(*refined_results[i]));
+        continue;
+      }
+      planner_failure_t const& failure = refinement_failures[i];
+      if (!failure.code.empty() && !failure.retryable) {
+        out.status = solve_status_e::invalid_problem;
+        out.failure = failure;
+        out.timings.total_seconds = elapsed_seconds(total_start);
+        return out;
+      }
+      if (!failure.code.empty()) {
+        out.failure = failure;
+      }
+    }
+    out.timings.refined_candidates = refined.size();
+
+    planner_clock_t::time_point const motion_start = planner_clock_t::now();
+    std::vector<std::optional<direct_candidate_result_t>> motion_results(
+      refined.size());
+    std::atomic<std::size_t> accepted_count {0};
+    std::atomic<std::size_t> attempted_count {0};
+    auto enough_candidates = [&]() {
+      return accepted_count.load(std::memory_order_relaxed) >=
+        static_cast<std::size_t>(config.max_candidates);
+    };
+    detail::planner_parallel_for(
+      refined.size(), config.worker_count, enough_candidates,
+      [&](std::size_t i) {
+        attempted_count.fetch_add(1, std::memory_order_relaxed);
+        direct_candidate_result_t result =
+          solve_direct_candidate(problem, refined[i], config);
+        bool const accepted = result.status == solve_status_e::success;
+        motion_results[i] = std::move(result);
+        if (accepted) {
+          accepted_count.fetch_add(1, std::memory_order_relaxed);
+        }
+      });
+    out.timings.trajectory_optimization_seconds = elapsed_seconds(motion_start);
+    out.timings.motion_candidates =
+      attempted_count.load(std::memory_order_relaxed);
+
+    for (std::optional<direct_candidate_result_t>& value : motion_results) {
       if (
         out.candidates.size() >=
         static_cast<std::size_t>(config.max_candidates)) {
         break;
       }
+      if (!value.has_value()) {
+        continue;
+      }
+      if (value->status == solve_status_e::invalid_problem) {
+        out.status = solve_status_e::invalid_problem;
+        out.candidates.clear();
+        out.selected_index = std::nullopt;
+        out.failure = std::move(value->failure);
+        out.timings.total_seconds = elapsed_seconds(total_start);
+        return out;
+      }
+      if (value->candidate.has_value()) {
+        out.candidates.push_back(std::move(*value->candidate));
+      } else if (!value->failure.code.empty()) {
+        out.failure = std::move(value->failure);
+      }
     }
     if (!out.candidates.empty()) {
-      std::sort(
+      std::stable_sort(
         out.candidates.begin(), out.candidates.end(),
         [](plan_candidate_t const& lhs, plan_candidate_t const& rhs) {
           return lhs.score > rhs.score;
@@ -550,6 +670,7 @@ namespace stacking_core {
       out.selected_index = 0;
       out.failure = {};
     }
+    out.timings.total_seconds = elapsed_seconds(total_start);
     return out;
   }
 
@@ -592,6 +713,7 @@ namespace stacking_core {
           .message = "no approach distance produced a feasible in-hand place",
           .retryable = true,
         },
+      .timings = {},
     };
 
     for (Scalar scale : std::array<Scalar, 4> {1.0, 0.75, 0.5, 0.25}) {

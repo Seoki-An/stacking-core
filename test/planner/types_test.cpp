@@ -107,6 +107,7 @@ int main() {
     .candidates = {candidate},
     .selected_index = 0,
     .failure = {},
+    .timings = {},
   };
   require(plan.selected_candidate() != nullptr);
   require(plan.selected_candidate()->score == 3.0);

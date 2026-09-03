@@ -5,6 +5,7 @@
 
 #include <Eigen/Core>
 
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <vector>
@@ -40,6 +41,16 @@ namespace stacking_core {
     bool converged = false;
     Scalar objective = 0.0;
     Scalar grad_norm = 0.0;
+  };
+
+  struct planner_timings_t {
+    Scalar grasp_generation_seconds = 0.0;
+    Scalar simulation_refinement_seconds = 0.0;
+    Scalar trajectory_optimization_seconds = 0.0;
+    Scalar total_seconds = 0.0;
+    std::size_t grasp_candidates = 0;
+    std::size_t refined_candidates = 0;
+    std::size_t motion_candidates = 0;
   };
 
   // The gripper model maps this scalar opening coordinate to its independent

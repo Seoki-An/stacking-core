@@ -1,10 +1,13 @@
 #include <stacking_core/geometry/dsf_vert.hpp>
 #include <stacking_core/planner/regrasp.hpp>
 
+#include "parallel.hpp"
+
 #include <Eigen/Geometry>
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <memory>
@@ -16,6 +19,13 @@
 
 namespace stacking_core {
   namespace {
+
+    using planner_clock_t = std::chrono::steady_clock;
+
+    Scalar elapsed_seconds(planner_clock_t::time_point start) {
+      return std::chrono::duration<Scalar>(planner_clock_t::now() - start)
+        .count();
+    }
 
     struct regrasp_leg_t {
       bool feasible = false;
@@ -52,6 +62,7 @@ namespace stacking_core {
             .message = std::move(message),
             .retryable = false,
           },
+        .timings = {},
       };
     }
 
@@ -66,7 +77,8 @@ namespace stacking_core {
         config.max_handoff_orientation_distance >= 0.0 &&
         config.max_handoff_orientation_distance <= std::numbers::pi &&
         config.move_steps >= 2 && config.grasp_steps >= 2 &&
-        config.yaw_samples >= 1 && config.max_candidates >= 1;
+        config.yaw_samples >= 1 && config.max_candidates >= 1 &&
+        config.worker_count >= 0;
     }
 
     Matrix3 basis_from_z(Vector3 z) {
@@ -745,6 +757,8 @@ namespace stacking_core {
         "invalid_grasp", "regrasp candidates must be finite");
     }
 
+    planner_clock_t::time_point const total_start = planner_clock_t::now();
+    planner_clock_t::time_point const pose_start = planner_clock_t::now();
     regrasp_pose_result_t const poses = generate_regrasp_poses(
       regrasp_pose_problem_t {
         .body_model = pick_target.modelPtr(),
@@ -754,12 +768,16 @@ namespace stacking_core {
       },
       config);
     if (poses.status != solve_status_e::success) {
-      return plan_result_t {
+      plan_result_t result {
         .status = poses.status,
         .candidates = {},
         .selected_index = std::nullopt,
         .failure = poses.failure,
+        .timings = {},
       };
+      result.timings.grasp_generation_seconds = elapsed_seconds(pose_start);
+      result.timings.total_seconds = elapsed_seconds(total_start);
+      return result;
     }
 
     plan_result_t result {
@@ -772,38 +790,65 @@ namespace stacking_core {
           .message = "no stable pose and grasp pair produced a feasible motion",
           .retryable = true,
         },
+      .timings = {},
     };
+    result.timings.grasp_generation_seconds = elapsed_seconds(pose_start);
+    result.timings.grasp_candidates =
+      problem.pick_grasps.size() + problem.place_grasps.size();
+    planner_clock_t::time_point const motion_start = planner_clock_t::now();
     for (regrasp_pose_t const& pose : poses.poses) {
       phase_scene_t const handoff =
         phase_with_target_pose(problem.handoff, pose.frame_from_body);
-      std::vector<regrasp_leg_t> pick_legs;
-      pick_legs.reserve(problem.pick_grasps.size());
-      for (grasp_candidate_t const& candidate : problem.pick_grasps) {
-        regrasp_leg_t leg = solve_pick_leg(problem, handoff, candidate, config);
+      std::vector<regrasp_leg_t> pick_legs(problem.pick_grasps.size());
+      std::vector<regrasp_leg_t> place_legs(problem.place_grasps.size());
+      std::size_t const pick_count = problem.pick_grasps.size();
+      detail::planner_parallel_for(
+        pick_count + problem.place_grasps.size(), config.worker_count,
+        [&](std::size_t i) {
+          if (i < pick_count) {
+            pick_legs[i] =
+              solve_pick_leg(problem, handoff, problem.pick_grasps[i], config);
+          } else {
+            std::size_t const place_index = i - pick_count;
+            place_legs[place_index] = solve_place_leg(
+              problem, handoff, problem.place_grasps[place_index], config);
+          }
+        });
+      result.timings.motion_candidates += pick_legs.size() + place_legs.size();
+
+      for (regrasp_leg_t const& leg : pick_legs) {
         if (leg.status == solve_status_e::invalid_problem) {
-          return invalid_plan_result(leg.failure.code, leg.failure.message);
+          result.status = solve_status_e::invalid_problem;
+          result.candidates.clear();
+          result.selected_index = std::nullopt;
+          result.failure = leg.failure;
+          result.timings.trajectory_optimization_seconds =
+            elapsed_seconds(motion_start);
+          result.timings.total_seconds = elapsed_seconds(total_start);
+          return result;
         }
         if (
           !leg.feasible && result.failure.code == "regrasp_motion_infeasible" &&
           !leg.failure.code.empty()) {
           result.failure = leg.failure;
         }
-        pick_legs.push_back(std::move(leg));
       }
-      std::vector<regrasp_leg_t> place_legs;
-      place_legs.reserve(problem.place_grasps.size());
-      for (grasp_candidate_t const& candidate : problem.place_grasps) {
-        regrasp_leg_t leg =
-          solve_place_leg(problem, handoff, candidate, config);
+      for (regrasp_leg_t const& leg : place_legs) {
         if (leg.status == solve_status_e::invalid_problem) {
-          return invalid_plan_result(leg.failure.code, leg.failure.message);
+          result.status = solve_status_e::invalid_problem;
+          result.candidates.clear();
+          result.selected_index = std::nullopt;
+          result.failure = leg.failure;
+          result.timings.trajectory_optimization_seconds =
+            elapsed_seconds(motion_start);
+          result.timings.total_seconds = elapsed_seconds(total_start);
+          return result;
         }
         if (
           !leg.feasible && result.failure.code == "regrasp_motion_infeasible" &&
           !leg.failure.code.empty()) {
           result.failure = leg.failure;
         }
-        place_legs.push_back(std::move(leg));
       }
 
       std::vector<std::pair<std::size_t, std::size_t>> pairs;
@@ -839,10 +884,16 @@ namespace stacking_core {
           result.status = solve_status_e::success;
           result.selected_index = 0;
           result.failure = {};
+          result.timings.trajectory_optimization_seconds =
+            elapsed_seconds(motion_start);
+          result.timings.total_seconds = elapsed_seconds(total_start);
           return result;
         }
       }
     }
+    result.timings.trajectory_optimization_seconds =
+      elapsed_seconds(motion_start);
+    result.timings.total_seconds = elapsed_seconds(total_start);
     return result;
   }
 

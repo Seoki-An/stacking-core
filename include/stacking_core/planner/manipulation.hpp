@@ -57,6 +57,9 @@ namespace stacking_core {
     int move_steps = 50;
     int grasp_steps = 50;
     int max_candidates = 1;
+    // Zero selects the available hardware concurrency. Candidate-internal
+    // motion stages remain sequential because each stage depends on the last.
+    int worker_count = 0;
   };
 
   struct inhand_plan_config_t {
@@ -99,6 +102,7 @@ namespace stacking_core {
     std::vector<plan_candidate_t> candidates;
     std::optional<std::size_t> selected_index;
     planner_failure_t failure;
+    planner_timings_t timings;
 
     [[nodiscard]] plan_candidate_t const* selected_candidate() const noexcept;
   };

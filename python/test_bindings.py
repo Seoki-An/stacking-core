@@ -285,6 +285,8 @@ class PlannerBindingsTest(unittest.TestCase):
         config = stacking_core.PickPlaceConfig()
 
         config.direct.grasp_sampling.max_seeds = 9
+        config.direct.grasp_sampling.worker_count = 3
+        config.direct.grasp_sampling.max_candidates = 2
         config.direct.grasp_generation.trust_region.max_iters = 17
         config.direct.grasp_generation.force.weight.moment = 8.0
         config.direct.inverse_kinematics.initialization = (
@@ -292,15 +294,20 @@ class PlannerBindingsTest(unittest.TestCase):
         )
         config.direct.grasp_simulation.pgs_iters = 13
         config.direct.motion.collision_margin = 0.03
+        config.direct.worker_count = 4
         config.regrasp.stable_pose.sampling_level = 4
+        config.regrasp.worker_count = 2
 
         self.assertEqual(config.direct.grasp_sampling.max_seeds, 9)
+        self.assertEqual(config.direct.grasp_sampling.worker_count, 3)
         self.assertEqual(
             config.direct.grasp_generation.trust_region.max_iters, 17
         )
         self.assertEqual(config.direct.grasp_generation.force.weight.moment, 8.0)
         self.assertEqual(config.direct.grasp_simulation.pgs_iters, 13)
+        self.assertEqual(config.direct.worker_count, 4)
         self.assertEqual(config.regrasp.stable_pose.sampling_level, 4)
+        self.assertEqual(config.regrasp.worker_count, 2)
 
     def test_pick_place_success_result_matches_adapter_shape(self) -> None:
         result = stacking_core.solve_pick_place(
@@ -316,6 +323,10 @@ class PlannerBindingsTest(unittest.TestCase):
         sample = candidate.segments[0].trajectory.samples[0]
         self.assertEqual(sample.robot.positions.shape, (6,))
         self.assertEqual(sample.frame_from_target.shape, (7,))
+        self.assertGreaterEqual(result.timings.total_seconds, 0.0)
+        self.assertEqual(result.timings.grasp_candidates, 1)
+        self.assertEqual(result.timings.refined_candidates, 1)
+        self.assertEqual(result.timings.motion_candidates, 1)
 
     def test_pick_place_failure_is_structured(self) -> None:
         config = self.direct_only_config()

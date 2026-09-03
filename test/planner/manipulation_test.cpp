@@ -131,13 +131,19 @@ int main() {
     .grasp = pick_grasp,
     .positions = {q_home, q_home},
   };
+  auto grasp_with_score = [&](Scalar score) {
+    joint_grasp_candidate_t candidate = common_grasp;
+    candidate.grasp.score = score;
+    return candidate;
+  };
 
   direct_plan_problem_t direct_problem {
     .pick = phase(target_model, frame_from_target),
     .place = phase(target_model, frame_from_target),
     .robot = robot,
     .gripper = gripper,
-    .grasp_candidates = {common_grasp},
+    .grasp_candidates =
+      {grasp_with_score(1.0), grasp_with_score(3.0), grasp_with_score(2.0)},
   };
   direct_plan_config_t direct_config;
   direct_config.simulation_refinement = false;
@@ -145,8 +151,37 @@ int main() {
   direct_config.move_steps = 2;
   direct_config.grasp_steps = 2;
   direct_config.motion.max_iters = 1;
+  direct_config.max_candidates = 2;
+  direct_config.worker_count = 4;
+  direct_plan_config_t serial_config = direct_config;
+  serial_config.worker_count = 1;
+  plan_result_t const serial = solve_direct(direct_problem, serial_config);
   plan_result_t const direct = solve_direct(direct_problem, direct_config);
+  require(serial.status == solve_status_e::success);
   require(direct.status == solve_status_e::success);
+  require(serial.candidates.size() == direct.candidates.size());
+  require(direct.candidates.size() == 2);
+  require(direct.candidates[0].score == 3.0);
+  require(direct.candidates[1].score == 2.0);
+  for (std::size_t i = 0; i < direct.candidates.size(); ++i) {
+    require(serial.candidates[i].score == direct.candidates[i].score);
+    require(
+      serial.candidates[i].segments.size() ==
+      direct.candidates[i].segments.size());
+    for (std::size_t j = 0; j < direct.candidates[i].segments.size(); ++j) {
+      trajectory_t const& lhs = serial.candidates[i].segments[j].trajectory;
+      trajectory_t const& rhs = direct.candidates[i].segments[j].trajectory;
+      require(lhs.samples.size() == rhs.samples.size());
+      for (std::size_t k = 0; k < lhs.samples.size(); ++k) {
+        require(lhs.samples[k].robot.positions.isApprox(
+          rhs.samples[k].robot.positions, 1e-12));
+      }
+    }
+  }
+  require(direct.timings.grasp_candidates == 3);
+  require(direct.timings.refined_candidates == 3);
+  require(direct.timings.motion_candidates == 3);
+  require(direct.timings.total_seconds > 0.0);
   require(direct.selected_candidate() != nullptr);
   require(direct.selected_candidate()->segments.size() == 5);
   require(direct.selected_candidate()->grasp_events.size() == 2);

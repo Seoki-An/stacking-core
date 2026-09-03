@@ -294,6 +294,32 @@ int main() {
   require(sampled.selected_candidate() != nullptr);
   require(sampled.selected_candidate()->solver.converged);
 
+  grasp_sampling_config_t serial_sampling_config = parallel_config;
+  serial_sampling_config.max_seeds = 15;
+  serial_sampling_config.worker_count = 1;
+  grasp_result_t const serial_sampled =
+    sample_grasps(problem, serial_sampling_config, generation_config);
+  grasp_sampling_config_t concurrent_sampling_config = serial_sampling_config;
+  concurrent_sampling_config.worker_count = 4;
+  grasp_result_t const concurrent_sampled =
+    sample_grasps(problem, concurrent_sampling_config, generation_config);
+  require(concurrent_sampled.status == serial_sampled.status);
+  require(
+    concurrent_sampled.candidates.size() == serial_sampled.candidates.size());
+  for (std::size_t i = 0; i < serial_sampled.candidates.size(); ++i) {
+    grasp_candidate_t const& serial_candidate = serial_sampled.candidates[i];
+    grasp_candidate_t const& concurrent_candidate =
+      concurrent_sampled.candidates[i];
+    require(
+      std::abs(concurrent_candidate.score - serial_candidate.score) < 1e-12);
+    require(concurrent_candidate.grasp.frame_from_grasp.position.isApprox(
+      serial_candidate.grasp.frame_from_grasp.position, 1e-12));
+    require(
+      concurrent_candidate.grasp.frame_from_grasp.orientation.angularDistance(
+        serial_candidate.grasp.frame_from_grasp.orientation) < 1e-12);
+    require(concurrent_candidate.failure.code == serial_candidate.failure.code);
+  }
+
   grasp_simulation_config_t simulation_config;
   simulation_config.steps = 400;
   grasp_simulation_result_t const simulated = simulate_grasp(

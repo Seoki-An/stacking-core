@@ -225,7 +225,9 @@ void bind_planner_grasp(nb::module_ &module) {
       .def_rw("scene_clearance_margin",
               &grasp_sampling_config_t::scene_clearance_margin)
       .def_rw("preferred_parallel_axis",
-              &grasp_sampling_config_t::preferred_parallel_axis);
+              &grasp_sampling_config_t::preferred_parallel_axis)
+      .def_rw("worker_count", &grasp_sampling_config_t::worker_count)
+      .def_rw("max_candidates", &grasp_sampling_config_t::max_candidates);
 
   nb::class_<grasp_simulation_config_t>(module, "GraspSimulationConfig")
       .def(nb::init<>())

@@ -59,6 +59,7 @@ namespace stacking_core {
     int grasp_steps = 50;
     int yaw_samples = 8;
     int max_candidates = 1;
+    int worker_count = 0;
   };
 
   [[nodiscard]] regrasp_pose_result_t generate_regrasp_poses(

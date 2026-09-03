@@ -2,13 +2,17 @@
 #include <stacking_core/collision.hpp>
 #include <stacking_core/planner/grasp/sampling.hpp>
 
+#include "../parallel.hpp"
+
 #include <Eigen/Geometry>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <numbers>
 #include <optional>
 #include <random>
@@ -29,6 +33,16 @@ namespace stacking_core {
       Scalar opening = 0.0;
       Scalar aperture = 0.0;
       Vector3 midpoint = Vector3::Zero();
+    };
+
+    struct grasp_evaluation_t {
+      bool feasible = false;
+      grasp_candidate_t candidate;
+    };
+
+    struct joint_grasp_evaluation_t {
+      bool feasible = false;
+      joint_grasp_candidate_t candidate;
     };
 
     grasp_seed_result_t invalid_seed_result(
@@ -517,7 +531,8 @@ namespace stacking_core {
       config.aperture_margin < 0.0 ||
       !std::isfinite(config.scene_clearance_margin) ||
       config.scene_clearance_margin < 0.0 ||
-      !config.preferred_parallel_axis.allFinite()) {
+      !config.preferred_parallel_axis.allFinite() || config.worker_count < 0 ||
+      config.max_candidates < 0) {
       return invalid_seed_result(
         "invalid_sampling_config", "grasp sampling configuration is invalid");
     }
@@ -633,28 +648,63 @@ namespace stacking_core {
       };
     }
 
+    std::vector<std::optional<grasp_evaluation_t>> evaluated(
+      seeds.seeds.size());
+    std::atomic<std::size_t> accepted_count {0};
+    std::vector<grasp_t> accepted;
+    std::mutex accepted_mutex;
+    auto enough_candidates = [&]() {
+      return sampling_config.max_candidates > 0 &&
+        accepted_count.load(std::memory_order_relaxed) >=
+        static_cast<std::size_t>(sampling_config.max_candidates);
+    };
+    detail::planner_parallel_for(
+      seeds.seeds.size(), sampling_config.worker_count, enough_candidates,
+      [&](std::size_t i) {
+        grasp_seed_t const& seed = seeds.seeds[i];
+        grasp_result_t result = solve_grasp_pose(
+          grasp_problem_t {
+            .phases = problem.phases,
+            .gripper = problem.gripper,
+            .seed = seed.grasp,
+          },
+          generation_config);
+        if (result.candidates.empty()) {
+          return;
+        }
+        grasp_candidate_t candidate = std::move(result.candidates.front());
+        bool const is_feasible = result.status == solve_status_e::success;
+        if (is_feasible) {
+          std::lock_guard lock {accepted_mutex};
+          bool const duplicate = std::any_of(
+            accepted.begin(), accepted.end(), [&](grasp_t const& other) {
+              return same_grasp(candidate.grasp, other);
+            });
+          if (!duplicate) {
+            accepted.push_back(candidate.grasp);
+            accepted_count.store(accepted.size(), std::memory_order_relaxed);
+          }
+        }
+        evaluated[i] = grasp_evaluation_t {
+          .feasible = is_feasible,
+          .candidate = std::move(candidate),
+        };
+      });
+
     std::vector<grasp_candidate_t> feasible;
     std::vector<grasp_candidate_t> failed;
-    for (grasp_seed_t const& seed : seeds.seeds) {
-      grasp_result_t result = solve_grasp_pose(
-        grasp_problem_t {
-          .phases = problem.phases,
-          .gripper = problem.gripper,
-          .seed = seed.grasp,
-        },
-        generation_config);
-      if (result.candidates.empty()) {
+    for (std::optional<grasp_evaluation_t>& value : evaluated) {
+      if (!value.has_value()) {
         continue;
       }
-      grasp_candidate_t candidate = std::move(result.candidates.front());
-      if (result.status == solve_status_e::success) {
-        feasible.push_back(std::move(candidate));
+      if (value->feasible) {
+        feasible.push_back(std::move(value->candidate));
       } else {
-        failed.push_back(std::move(candidate));
+        failed.push_back(std::move(value->candidate));
       }
     }
 
-    std::sort(
+    std::stable_sort(
       feasible.begin(), feasible.end(),
       [](grasp_candidate_t const& lhs, grasp_candidate_t const& rhs) {
         return lhs.score > rhs.score;
@@ -711,8 +761,8 @@ namespace stacking_core {
         .failure =
           planner_failure_t {
             .code = "invalid_joint_sampling_problem",
-            .message =
-              "joint sampling requires one state per phase and a valid link",
+            .message = "joint sampling requires one state per phase and a "
+                       "valid link",
             .retryable = false,
           },
       };
@@ -729,95 +779,139 @@ namespace stacking_core {
       };
     }
 
-    std::vector<joint_grasp_candidate_t> feasible;
-    std::vector<joint_grasp_candidate_t> failed;
+    std::vector<std::optional<joint_grasp_evaluation_t>> evaluated(
+      seeds.seeds.size());
+    std::atomic<std::size_t> accepted_count {0};
+    std::vector<grasp_t> accepted;
+    std::mutex accepted_mutex;
+    std::mutex initializer_mutex;
     phase_scene_t const& ref = problem.grasp.phases.front();
-    for (grasp_seed_t const& seed : seeds.seeds) {
-      std::vector<KinematicState> states = problem.initial_states;
-      planner_failure_t ik_failure;
-      bool ik_solved = true;
-      for (std::size_t phase = 0; phase < states.size(); ++phase) {
-        pose_t const frame_from_grasp = phase_grasp_pose(
-          ref, problem.grasp.phases[phase], seed.grasp.frame_from_grasp);
-        pose_t const frame_from_link =
-          compose(frame_from_grasp, inverse(problem.link_from_grasp));
-        inverse_kinematics_config_t local_ik_config = ik_config;
-        if (problem.ik_initializer) {
-          std::optional<Eigen::VectorXd> const initialized =
-            problem.ik_initializer(
-              states[phase], problem.grasp_link, frame_from_link);
-          if (
-            !initialized.has_value() ||
-            initialized->size() != states[phase].positions().size() ||
-            !initialized->allFinite()) {
-            ik_failure = planner_failure_t {
-              .code = "joint_sampling_initializer_failed",
-              .message =
-                "joint grasp IK initializer did not produce a valid seed",
-              .retryable = true,
-            };
+    auto enough_candidates = [&]() {
+      return sampling_config.max_candidates > 0 &&
+        accepted_count.load(std::memory_order_relaxed) >=
+        static_cast<std::size_t>(sampling_config.max_candidates);
+    };
+    detail::planner_parallel_for(
+      seeds.seeds.size(), sampling_config.worker_count, enough_candidates,
+      [&](std::size_t i) {
+        grasp_seed_t const& seed = seeds.seeds[i];
+        std::vector<KinematicState> states = problem.initial_states;
+        planner_failure_t ik_failure;
+        bool ik_solved = true;
+        for (std::size_t phase = 0; phase < states.size(); ++phase) {
+          pose_t const frame_from_grasp = phase_grasp_pose(
+            ref, problem.grasp.phases[phase], seed.grasp.frame_from_grasp);
+          pose_t const frame_from_link =
+            compose(frame_from_grasp, inverse(problem.link_from_grasp));
+          inverse_kinematics_config_t local_ik_config = ik_config;
+          if (problem.ik_initializer) {
+            std::optional<Eigen::VectorXd> initialized;
+            {
+              std::lock_guard lock {initializer_mutex};
+              initialized = problem.ik_initializer(
+                states[phase], problem.grasp_link, frame_from_link);
+            }
+            if (
+              !initialized.has_value() ||
+              initialized->size() != states[phase].positions().size() ||
+              !initialized->allFinite()) {
+              ik_failure = planner_failure_t {
+                .code = "joint_sampling_initializer_failed",
+                .message =
+                  "joint grasp IK initializer did not produce a valid seed",
+                .retryable = true,
+              };
+              ik_solved = false;
+              break;
+            }
+            states[phase].setPositions(*initialized);
+            local_ik_config.initialization =
+              inverse_kinematics_initialization_e::provided;
+          }
+          inverse_kinematics_result_t const ik = solve_inverse_kinematics(
+            inverse_kinematics_problem_t {
+              .initial_state = states[phase],
+              .link = problem.grasp_link,
+              .frame_from_link = frame_from_link,
+              .position_only = false,
+            },
+            local_ik_config);
+          if (ik.status != solve_status_e::success) {
+            ik_failure = ik.failure;
             ik_solved = false;
             break;
           }
-          states[phase].setPositions(*initialized);
-          local_ik_config.initialization =
-            inverse_kinematics_initialization_e::provided;
+          states[phase].setPositions(ik.positions);
         }
-        inverse_kinematics_result_t const ik = solve_inverse_kinematics(
-          inverse_kinematics_problem_t {
-            .initial_state = states[phase],
-            .link = problem.grasp_link,
-            .frame_from_link = frame_from_link,
-            .position_only = false,
-          },
-          local_ik_config);
-        if (ik.status != solve_status_e::success) {
-          ik_failure = ik.failure;
-          ik_solved = false;
-          break;
+        if (!ik_solved) {
+          evaluated[i] = joint_grasp_evaluation_t {
+            .feasible = false,
+            .candidate =
+              joint_grasp_candidate_t {
+                .grasp =
+                  grasp_candidate_t {
+                    .grasp = seed.grasp,
+                    .score = 0.0,
+                    .contacts = {},
+                    .solver = {},
+                    .failure = std::move(ik_failure),
+                  },
+                .positions = {},
+              },
+          };
+          return;
         }
-        states[phase].setPositions(ik.positions);
-      }
-      if (!ik_solved) {
-        failed.push_back(joint_grasp_candidate_t {
-          .grasp =
-            grasp_candidate_t {
-              .grasp = seed.grasp,
-              .score = 0.0,
-              .contacts = {},
-              .solver = {},
-              .failure = std::move(ik_failure),
-            },
-          .positions = {},
-        });
-        continue;
-      }
 
-      joint_grasp_result_t result = solve_joint_grasp(
-        joint_grasp_problem_t {
-          .grasp =
-            grasp_problem_t {
-              .phases = problem.grasp.phases,
-              .gripper = problem.grasp.gripper,
-              .seed = seed.grasp,
-            },
-          .initial_states = std::move(states),
-          .grasp_link = problem.grasp_link,
-          .link_from_grasp = problem.link_from_grasp,
-        },
-        generation_config);
-      if (result.candidates.empty()) {
+        joint_grasp_result_t result = solve_joint_grasp(
+          joint_grasp_problem_t {
+            .grasp =
+              grasp_problem_t {
+                .phases = problem.grasp.phases,
+                .gripper = problem.grasp.gripper,
+                .seed = seed.grasp,
+              },
+            .initial_states = std::move(states),
+            .grasp_link = problem.grasp_link,
+            .link_from_grasp = problem.link_from_grasp,
+          },
+          generation_config);
+        if (result.candidates.empty()) {
+          return;
+        }
+        joint_grasp_candidate_t candidate =
+          std::move(result.candidates.front());
+        bool const is_feasible = result.status == solve_status_e::success;
+        if (is_feasible) {
+          std::lock_guard lock {accepted_mutex};
+          bool const duplicate = std::any_of(
+            accepted.begin(), accepted.end(), [&](grasp_t const& other) {
+              return same_grasp(candidate.grasp.grasp, other);
+            });
+          if (!duplicate) {
+            accepted.push_back(candidate.grasp.grasp);
+            accepted_count.store(accepted.size(), std::memory_order_relaxed);
+          }
+        }
+        evaluated[i] = joint_grasp_evaluation_t {
+          .feasible = is_feasible,
+          .candidate = std::move(candidate),
+        };
+      });
+
+    std::vector<joint_grasp_candidate_t> feasible;
+    std::vector<joint_grasp_candidate_t> failed;
+    for (std::optional<joint_grasp_evaluation_t>& value : evaluated) {
+      if (!value.has_value()) {
         continue;
       }
-      joint_grasp_candidate_t candidate = std::move(result.candidates.front());
-      if (result.status == solve_status_e::success) {
-        feasible.push_back(std::move(candidate));
+      if (value->feasible) {
+        feasible.push_back(std::move(value->candidate));
       } else {
-        failed.push_back(std::move(candidate));
+        failed.push_back(std::move(value->candidate));
       }
     }
 
-    std::sort(
+    std::stable_sort(
       feasible.begin(), feasible.end(),
       [](
         joint_grasp_candidate_t const& lhs,
