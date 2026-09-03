@@ -15,13 +15,12 @@ using vector_x_t = Eigen::VectorXd;
 using matrix_x6_t = Eigen::Matrix<Scalar, Eigen::Dynamic, 6>;
 
 enum class factor_kind_e {
-  acceleration,
   contact_3d,
   contact_4d,
 };
 
 struct factor_id_t {
-  factor_kind_e kind = factor_kind_e::acceleration;
+  factor_kind_e kind = factor_kind_e::contact_3d;
   EntityId first;
   EntityId second;
   GeometryId first_geometry;
@@ -39,6 +38,19 @@ struct constraint_factor_t {
   std::function<vector_x_t(vector_x_t const&)> projector;
 };
 
+// Per-body dynamics. The equations of motion are the objective of this solve,
+// not one of its constraints, so they enter the velocity update directly
+// rather than as a factor: the update solves
+//   (mass + beta * sum C' C) v = momentum + sum C' (...)
+// whose fixed point is mass * v = momentum + sum C' impulse.
+struct constraint_node_t {
+  Matrix6 mass = Matrix6::Identity();
+  // mass * v0 + force * dt, the momentum the body would carry with no contact.
+  Vector6 momentum = Vector6::Zero();
+  // Warm start on entry, solution on exit.
+  Vector6 velocity = Vector6::Zero();
+};
+
 class ConstraintSolver {
 public:
   void clear_factors();
@@ -46,7 +58,7 @@ public:
   void add_factor(constraint_factor_t factor);
 
   [[nodiscard]] simulation_solver_stats_t solve(
-    std::map<EntityId, Vector6>& vars,
+    std::map<EntityId, constraint_node_t>& nodes,
     simulation_solver_config_t const& config,
     Scalar dynamics_scale);
 

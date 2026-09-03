@@ -1,14 +1,14 @@
 add_executable(
-  stacking-core-simulation-diffsim-reference-test
-  diffsim_reference_test.cpp
+  stacking-core-simulation-regression-test
+  simulation_regression_test.cpp
 )
 target_link_libraries(
-  stacking-core-simulation-diffsim-reference-test
+  stacking-core-simulation-regression-test
   PRIVATE stacking-core::simulation
 )
 add_test(
-  NAME stacking-core.simulation-diffsim-reference
-  COMMAND stacking-core-simulation-diffsim-reference-test
+  NAME stacking-core.simulation-regression
+  COMMAND stacking-core-simulation-regression-test
 )
 
 add_executable(stacking-core-simulation-test simulation_test.cpp)

@@ -15,11 +15,14 @@ enum class simulation_contact_model_e {
 };
 
 struct simulation_solver_config_t {
+  // Reference scale used to normalise constraint rows against the body mass.
+  // It does not regularise the velocity solve: the mass matrix does that, so
+  // this value no longer damps motion.
   Scalar damping = 1e-3;
   Scalar beta_init = 1.0;
   int beta_update_interval = 30;
-  Scalar beta_min = 1e-3;
-  Scalar beta_max = 1e3;
+  Scalar beta_min = 1e-4;
+  Scalar beta_max = 1e4;
   int max_iters = 2000;
   Scalar tol_abs = 1e-4;
   Scalar tol_rel = 1e-5;

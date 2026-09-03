@@ -9,6 +9,7 @@
 #include <utility>
 
 namespace stacking_core::simulation_detail {
+
 namespace {
 
 struct node_data_t {
@@ -16,6 +17,7 @@ struct node_data_t {
   Eigen::LLT<Matrix6> lhs_llt;
   Vector6 rhs = Vector6::Zero();
   Vector6 residual = Vector6::Zero();
+  constraint_node_t* dynamics = nullptr;
   Vector6* var = nullptr;
   bool in_admm = false;
 };
@@ -85,7 +87,7 @@ void ConstraintSolver::add_factor(constraint_factor_t factor) {
 }
 
 simulation_solver_stats_t ConstraintSolver::solve(
-  std::map<EntityId, Vector6>& vars,
+  std::map<EntityId, constraint_node_t>& node_dynamics,
   simulation_solver_config_t const& config,
   Scalar dynamics_scale) {
   validate_config(config);
@@ -99,11 +101,13 @@ simulation_solver_stats_t ConstraintSolver::solve(
   Scalar beta_ratio = 1.0;
 
   std::map<EntityId, node_data_t> nodes;
-  for (auto& [id, var] : vars) {
-    if (!var.allFinite()) {
+  for (auto& [id, dynamics] : node_dynamics) {
+    if (!dynamics.velocity.allFinite() || !dynamics.mass.allFinite() ||
+        !dynamics.momentum.allFinite()) {
       throw std::invalid_argument("simulation motion variable must be finite");
     }
-    nodes[id].var = &var;
+    nodes[id].dynamics = &dynamics;
+    nodes[id].var = &dynamics.velocity;
   }
 
   std::vector<factor_data_t> data;
@@ -174,9 +178,8 @@ simulation_solver_stats_t ConstraintSolver::solve(
   for (auto& [id, node] : nodes) {
     (void)id;
     if (!node.in_admm) {
-      node.lhs.setZero();
-      node.lhs.diagonal().setConstant(damping);
-      node.rhs.setZero();
+      node.lhs = node.dynamics->mass;
+      node.rhs = node.dynamics->momentum;
       any_free = true;
     }
   }
@@ -266,7 +269,7 @@ simulation_solver_stats_t ConstraintSolver::solve(
     Scalar scaled_primal_residual = 0.0;
 
     for (node_data_t* node : active_nodes) {
-      node->rhs.setZero();
+      node->rhs = node->dynamics->momentum;
     }
     for (factor_data_t* item : active_factors) {
       item->residual = item->impulse;
@@ -368,8 +371,7 @@ simulation_solver_stats_t ConstraintSolver::solve(
 
       if (iter == 0) {
         for (node_data_t* node : active_nodes) {
-          node->lhs.setZero();
-          node->lhs.diagonal().setConstant(damping);
+          node->lhs = node->dynamics->mass;
         }
         for (factor_data_t* item : active_factors) {
           for (std::size_t i = 0; i < item->nodes.size(); ++i) {
@@ -386,8 +388,8 @@ simulation_solver_stats_t ConstraintSolver::solve(
       } else if (beta_ratio != 1.0) {
         for (node_data_t* node : active_nodes) {
           node->lhs *= beta_ratio;
-          node->lhs.diagonal().array() +=
-            (1.0 - beta_ratio) * damping;
+          node->lhs.noalias() +=
+            (1.0 - beta_ratio) * node->dynamics->mass;
           node->lhs_llt.compute(node->lhs);
           if (node->lhs_llt.info() != Eigen::Success) {
             throw std::runtime_error("simulation factorization failed");
@@ -398,7 +400,7 @@ simulation_solver_stats_t ConstraintSolver::solve(
 
     for (node_data_t* node : active_nodes) {
       *node->var = node->lhs_llt.solve(node->rhs);
-      node->residual = node->rhs;
+      node->residual = node->rhs - node->dynamics->momentum;
     }
     for (factor_data_t* item : active_factors) {
       for (std::size_t i = 0; i < item->nodes.size(); ++i) {

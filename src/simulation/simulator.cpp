@@ -22,6 +22,7 @@ namespace stacking_core {
 namespace {
 
 using simulation_detail::constraint_factor_t;
+using simulation_detail::constraint_node_t;
 using simulation_detail::factor_id_t;
 using simulation_detail::factor_kind_e;
 using simulation_detail::matrix_x6_t;
@@ -329,7 +330,9 @@ public:
     }
 
     solver_.clear_factors();
-    std::map<EntityId, Vector6> vars;
+    // The equations of motion are the objective of the constraint solve, so
+    // they are handed to it as per-body dynamics rather than as factors.
+    std::map<EntityId, constraint_node_t> nodes;
     Scalar total_mass = 0.0;
     int dynamic_count = 0;
     for (std::size_t i = 0; i < scene.bodyCount(); ++i) {
@@ -343,30 +346,17 @@ public:
       inertial_t const& inertial = body.model().inertial();
       total_mass += inertial.mass;
       ++dynamic_count;
-      vars.emplace(body.id(), vectorized(body.motion()));
 
       Matrix6 const M = mass_matrix(body);
       Eigen::LLT<Matrix6> const M_llt {M};
       if (M_llt.info() != Eigen::Success) {
         throw std::runtime_error("dynamic body mass matrix is not positive definite");
       }
-      Matrix6 const J = M_llt.matrixU();
-      Vector6 const f = gravity_force(body, config_.gravity);
-      Vector6 const J_T_inv_f =
-        J.transpose().template triangularView<Eigen::Lower>().solve(f);
-      solver_.add_factor(constraint_factor_t {
-        .id = factor_id_t {
-          .kind = factor_kind_e::acceleration,
-          .first = body.id(),
-          .second = EntityId {},
-          .first_geometry = GeometryId {},
-          .second_geometry = GeometryId {},
-        },
-        .hard_inequality = false,
-        .entities = {body.id()},
-        .jacobians = {J},
-        .error = -J * vectorized(body.motion()) - J_T_inv_f * dt,
-        .projector = {},
+      Vector6 const velocity = vectorized(body.motion());
+      nodes.emplace(body.id(), constraint_node_t {
+        .mass = M,
+        .momentum = M * velocity + gravity_force(body, config_.gravity) * dt,
+        .velocity = velocity,
       });
     }
 
@@ -404,7 +394,7 @@ public:
       ? std::max(Scalar {1.0}, total_mass / dynamic_count)
       : Scalar {1.0};
     simulation_solver_stats_t const stats =
-      solver_.solve(vars, config_.solver, dynamics_scale);
+      solver_.solve(nodes, config_.solver, dynamics_scale);
 
     std::vector<BodyInstance> bodies;
     bodies.reserve(scene.bodyCount());
@@ -412,7 +402,7 @@ public:
       BodyInstance const& body = scene.body(i);
       motion_t motion = body.motion();
       if (body.isDynamic()) {
-        motion = motion_from(vars.at(body.id()));
+        motion = motion_from(nodes.at(body.id()).velocity);
       }
       pose_t pose = body.frameFromBody();
       if (body.isMovable()) {
