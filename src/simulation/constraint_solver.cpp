@@ -262,11 +262,12 @@ simulation_solver_stats_t ConstraintSolver::solve(
   int stagnation_last_improve = 0;
   stats.converged = false;
   for (int iter = 0; iter < config.max_iters; ++iter) {
+    // Primal quantities are kept unscaled, so they are comparable with
+    // tol_abs and with each other. Row scaling is a preconditioner and must
+    // not leak into either the convergence test or the penalty update.
     Scalar primal_var_norm = 0.0;
-    Scalar scaled_primal_var_norm = 0.0;
     Scalar dual_var_norm = 0.0;
     Scalar primal_residual = 0.0;
-    Scalar scaled_primal_residual = 0.0;
 
     for (node_data_t* node : active_nodes) {
       node->rhs = node->dynamics->momentum;
@@ -301,9 +302,7 @@ simulation_solver_stats_t ConstraintSolver::solve(
           item->jx[i] = item->jacobians[i] * *item->nodes[i]->var;
         }
         primal_var_norm = std::max(
-          primal_var_norm, item->jx[i].cwiseAbs().maxCoeff());
-        scaled_primal_var_norm = std::max(
-          scaled_primal_var_norm,
+          primal_var_norm,
           (item->jx[i].array() * item->scale_inv.array())
             .cwiseAbs().maxCoeff());
       }
@@ -311,9 +310,6 @@ simulation_solver_stats_t ConstraintSolver::solve(
         dual_var_norm, item->impulse.cwiseAbs().maxCoeff());
       primal_residual = std::max(
         primal_residual, item->residual.cwiseAbs().maxCoeff());
-      scaled_primal_residual = std::max(
-        scaled_primal_residual,
-        item->scaled_residual.cwiseAbs().maxCoeff());
     }
     beta_ratio = 1.0;
 
@@ -352,8 +348,8 @@ simulation_solver_stats_t ConstraintSolver::solve(
 
     if (iter % config.beta_update_interval == 0) {
       if (iter > 0) {
-        Scalar const primal_ratio = scaled_primal_var_norm > 0.0
-          ? scaled_primal_residual / scaled_primal_var_norm
+        Scalar const primal_ratio = primal_var_norm > 0.0
+          ? primal_residual / primal_var_norm
           : 0.0;
         Scalar const dual_ratio = dual_var_norm > 0.0
           ? dual_residual / dual_var_norm
