@@ -247,14 +247,37 @@ void require_state(
     (body.frameFromBody().orientation.coeffs() - orientation_xyzw).norm();
   Scalar const linear_error = (body.motion().linear - linear).norm();
   Scalar const angular_error = (body.motion().angular - angular).norm();
-  if (position_error > tol || orientation_error > tol ||
-      linear_error > tol || angular_error > tol) {
+  if (!(position_error <= tol && orientation_error <= tol &&
+        linear_error <= tol && angular_error <= tol)) {
     throw std::runtime_error(
       "simulation state error/tol ratios: position=" +
       std::to_string(position_error / tol) +
       ", orientation=" + std::to_string(orientation_error / tol) +
       ", linear=" + std::to_string(linear_error / tol) +
       ", angular=" + std::to_string(angular_error / tol));
+  }
+}
+
+void require_refined_state(
+  stacking_core::SceneSnapshot const& scene,
+  stacking_core::simulation_config_t config,
+  stacking_core::simulation_result_t const& result) {
+  using namespace stacking_core;
+  config.solver.tol_abs = 1e-12;
+  config.solver.tol_rel = 1e-13;
+  config.solver.stagnation_window = 0;
+  config.solver.max_iters = 200000;
+  Simulator sim {config};
+  auto const ref = sim.step(scene, 0.01);
+  require(ref.solver.converged);
+  for (std::size_t i = 0; i < ref.snapshot->bodyCount(); ++i) {
+    auto const& body = ref.snapshot->body(i);
+    // Independent of the default-iteration regression literals below. This
+    // bounds their state error for these fixtures, not for arbitrary scenes.
+    require_state(
+      result.snapshot->body(body.id()), body.frameFromBody().position,
+      body.frameFromBody().orientation.coeffs(),
+      body.motion().linear, body.motion().angular, 5e-4);
   }
 }
 
@@ -274,6 +297,9 @@ int main() {
   // velocity update now applies the mass matrix directly instead of carrying
   // the equations of motion as a constraint factor, so free motion is exact
   // and diffsim's numbers are no longer reproducible.
+  // Contact literals were subsequently refreshed after correcting momentum
+  // residuals and beta-transition ordering. Analytical solver tests and the
+  // tighter solves below check accuracy separately from these regression pins.
   Simulator free_sim;
   simulation_result_t free_result = free_sim.step(*free_scene(), 0.01);
   require(free_result.contacts.empty());
@@ -346,6 +372,7 @@ int main() {
   Simulator contact_sim;
   simulation_result_t const contact_result =
     contact_sim.step(*contact_scene(), 0.01);
+  require_refined_state(*contact_scene(), simulation_config_t {}, contact_result);
   require(contact_result.contacts.size() == 1);
   contact_t const& contact = contact_result.contacts.front();
   require(near(contact.feature.gap, -0.010000000000000009));
@@ -357,21 +384,21 @@ int main() {
   require_state(
     contact_result.snapshot->body(EntityId {1}),
     Vector3 {
-      0.20054545454539022,
-      -0.10133333333333173,
-      0.49199884964081958},
+      0.20054545446663916,
+      -0.10133333331975315,
+      0.4919995678507742},
     Eigen::Vector4d {
-      0.0013333326499357847,
-      0.00054545426593560905,
-      0.00099999948745033954,
-      0.99999846235117462},
+      0.0013333326669089775,
+      0.00054545433156145972,
+      0.00099999948745031981,
+      0.99999846235111611},
     Vector3 {
-      0.054545454539021827,
-      -0.1333333333331734,
-      0.19988496408195697},
+      0.054545446663914421,
+      -0.13333333197531519,
+      0.19995678507742007},
     Vector3 {
-      0.26666666666706651,
-      0.10909090910163027,
+      0.26666667006171202,
+      0.1090909222268093,
       0.20000000000000004},
     2e-12);
 
@@ -381,32 +408,34 @@ int main() {
   Simulator contact_4d_sim {contact_4d_config};
   simulation_result_t const contact_4d_result =
     contact_4d_sim.step(*contact_scene(), 0.01);
+  require_refined_state(*contact_scene(), contact_4d_config, contact_4d_result);
   require(contact_4d_result.contacts.size() == 1);
   require_state(
     contact_4d_result.snapshot->body(EntityId {1}),
     Vector3 {
-      0.20054545454538367,
-      -0.10133333333333197,
-      0.49199580364236462},
+      0.20054545435586044,
+      -0.10133333330070785,
+      0.49199929803123515},
     Eigen::Vector4d {
-      0.0013333326510327199,
-      0.00054545426638994581,
-      0.00099752767238696534,
-      0.9999984648199356},
+      0.0013333326907164363,
+      0.00054545442387735521,
+      0.00099999755127299305,
+      0.9999984623529703},
     Vector3 {
-      0.054545454538365304,
-      -0.1333333333331968,
-      0.19958036423646214},
+      0.054545435586041753,
+      -0.13333333007078343,
+      0.19992980312351724},
     Vector3 {
-      0.26666666666700806,
-      0.10909090910272447,
-      0.19950563656976211},
+      0.26666667482304141,
+      0.1090909406899304,
+      0.19999961276421258},
     2e-12);
 
   simulation_config_t pair_config;
   pair_config.gravity.setZero();
   Simulator pair_sim {pair_config};
   simulation_result_t const pair_result = pair_sim.step(*pair_scene(), 0.01);
+  require_refined_state(*pair_scene(), pair_config, pair_result);
   require(pair_result.contacts.size() == 1);
   require(near(pair_result.contacts.front().feature.gap, -0.02));
   require(pair_result.contacts.front().feature.normal.isApprox(
@@ -414,42 +443,42 @@ int main() {
   require_state(
     pair_result.snapshot->body(EntityId {3}),
     Vector3 {
-      -0.49149245630289251,
-      0.00057581365333165483,
+      -0.49149836063222047,
+      0.0005769292277274504,
       0},
     Eigen::Vector4d {
       0,
       0,
-      -7.7616466589784845e-05,
-      0.99999999698784203},
+      -7.6919232594493768e-05,
+      0.99999999704171583},
     Vector3 {
-      -0.14924563028925417,
-      0.057581365333165477,
+      -0.14983606322204476,
+      0.057692922772745035,
       0},
     Vector3 {
       0,
       0,
-      -0.015523293333543171},
+      -0.015383846534068681},
     2e-12);
   require_state(
     pair_result.snapshot->body(EntityId {4}),
     Vector3 {
-      0.49249023125176122,
-      0.00042196749979882828,
+      0.49249836063222041,
+      0.00042307077227254973,
       0},
     Eigen::Vector4d {
       0,
       0,
-      -7.622968730043948e-05,
-      0.99999999709451737},
+      -7.6919232594493809e-05,
+      0.99999999704171583},
     Vector3 {
-      0.24902312517612599,
-      0.042196749979882826,
+      0.24983606322204474,
+      0.04230707722725497,
       0},
     Vector3 {
       0,
       0,
-      -0.015245937474853498},
+      -0.01538384653406869},
     2e-12);
 
   simulation_config_t moving_config;
@@ -457,6 +486,7 @@ int main() {
   Simulator moving_sim {moving_config};
   simulation_result_t const moving_result =
     moving_sim.step(*moving_contact_scene(), 0.01);
+  require_refined_state(*moving_contact_scene(), moving_config, moving_result);
   require(moving_result.contacts.size() == 1);
   require(near(
     moving_result.contacts.front().feature.gap,
@@ -483,21 +513,21 @@ int main() {
   require_state(
     moving_result.snapshot->body(EntityId {6}),
     Vector3 {
-      0.25294317679741579,
-      -0.1001988632971227,
-      0.49474550722327643},
+      0.25294315193543682,
+      -0.10019886161725926,
+      0.49474332558461892},
     Eigen::Vector4d {
-      -5.0409826627145692e-05,
-      -0.00074606543408175553,
+      -5.0409400798899174e-05,
+      -0.00074605913182370699,
       0,
-      0.99999972042256968},
+      0.99999972042729302},
     Vector3 {
-      0.29431767974157863,
-      -0.019886329712268846,
-      0.474550722327644},
+      0.29431519354368385,
+      -0.019886161725924605,
+      0.47433255846189409},
     Vector3 {
-      -0.010081966264992562,
-      -0.14921310072188979,
+      -0.010081881099319448,
+      -0.14921184026992768,
       0});
 
   moving_config.contact.model =
@@ -505,6 +535,7 @@ int main() {
   Simulator moving_4d_sim {moving_config};
   simulation_result_t const moving_4d_result =
     moving_4d_sim.step(*moving_contact_scene(), 0.01);
+  require_refined_state(*moving_contact_scene(), moving_config, moving_4d_result);
   require(moving_4d_result.contacts.size() == 1);
   require_state(
     moving_4d_result.snapshot->body(EntityId {5}),
@@ -528,20 +559,20 @@ int main() {
   require_state(
     moving_4d_result.snapshot->body(EntityId {6}),
     Vector3 {
-      0.2514237760442592,
-      -0.10009620108407158,
-      0.49474550710371623},
+      0.25142299172912125,
+      -0.10009614808980549,
+      0.49474238965946093},
     Eigen::Vector4d {
-      -2.4385992787564202e-05,
-      -0.00036091269325594648,
-      0.0013096159859105562,
-      0.99999907702623436},
+      -2.4372559292157241e-05,
+      -0.00036071387752392703,
+      0.0013087236312949338,
+      0.99999907826654222},
     Vector3 {
-      0.14237760442591832,
-      -0.0096201084071567428,
-      0.47455071037162488},
+      0.14229917291212246,
+      -0.0096148089805488217,
+      0.47423896594609483},
     Vector3 {
-      -0.0048772000580221677,
-      -0.072182560858727332,
-      0.26192327776488755});
+      -0.0048745133560988904,
+      -0.072142797670263534,
+      0.26174480667864025});
 }

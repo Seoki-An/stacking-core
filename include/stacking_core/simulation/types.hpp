@@ -57,6 +57,9 @@ struct simulation_config_t {
 struct simulation_solver_stats_t {
   int iters = 0;
   bool converged = true;
+  // Infinity norms after the final complete sweep. Primal is the contact
+  // impulse change / beta, with contact-row scaling undone; dual is the
+  // per-body momentum residual M*v - p - sum J_scaled' * impulse_scaled.
   Scalar primal_residual = 0.0;
   Scalar dual_residual = 0.0;
 };
