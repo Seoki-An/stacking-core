@@ -98,7 +98,6 @@ simulation_solver_stats_t ConstraintSolver::solve(
   Scalar const damping = config.damping * dynamics_scale;
   Scalar beta = warm_beta_ > 0.0 ? warm_beta_ : config.beta_init;
   beta = std::clamp(beta, config.beta_min, config.beta_max);
-  Scalar beta_ratio = 1.0;
 
   std::map<EntityId, node_data_t> nodes;
   for (auto& [id, dynamics] : node_dynamics) {
@@ -159,6 +158,11 @@ simulation_solver_stats_t ConstraintSolver::solve(
       }
       if (valid) {
         item.auxiliary = warm->second.auxiliary;
+        if (warm_beta_ > 0.0 && beta != warm_beta_) {
+          for (vector_x_t& y : item.auxiliary) {
+            y = (beta / warm_beta_) * (y + item.impulse) - item.impulse;
+          }
+        }
       } else {
         item.impulse.setZero();
         for (vector_x_t& y : item.auxiliary) {
@@ -260,6 +264,24 @@ simulation_solver_stats_t ConstraintSolver::solve(
 
   Scalar stagnation_best = std::numeric_limits<Scalar>::infinity();
   int stagnation_last_improve = 0;
+  auto factorize = [&]() {
+    for (node_data_t* node : active_nodes) {
+      node->lhs = node->dynamics->mass;
+    }
+    for (factor_data_t* item : active_factors) {
+      for (std::size_t i = 0; i < item->nodes.size(); ++i) {
+        item->nodes[i]->lhs.noalias() += beta *
+          item->jacobians[i].transpose() * item->jacobians[i];
+      }
+    }
+    for (node_data_t* node : active_nodes) {
+      node->lhs_llt.compute(node->lhs);
+      if (node->lhs_llt.info() != Eigen::Success) {
+        throw std::runtime_error("simulation factorization failed");
+      }
+    }
+  };
+  factorize();
   stats.converged = false;
   for (int iter = 0; iter < config.max_iters; ++iter) {
     // Primal quantities are kept unscaled, so they are comparable with
@@ -290,33 +312,52 @@ simulation_solver_stats_t ConstraintSolver::solve(
 
       for (std::size_t i = 0; i < item->nodes.size(); ++i) {
         item->nodes[i]->rhs += item->jacobians[i].transpose() *
-          (beta_ratio * (item->auxiliary[i] + item->impulse) +
-           item->impulse);
+          (item->auxiliary[i] + 2.0 * item->impulse);
       }
       item->scaled_residual = (item->residual - item->impulse) / beta;
       item->residual =
         item->scaled_residual.array() * item->scale_inv.array();
 
+      primal_var_norm = std::max(
+        primal_var_norm, item->factor->error.cwiseAbs().maxCoeff());
+      primal_residual = std::max(
+        primal_residual, item->residual.cwiseAbs().maxCoeff());
+    }
+
+    for (node_data_t* node : active_nodes) {
+      *node->var = node->lhs_llt.solve(node->rhs);
+      // Momentum stationarity excludes the augmented beta * J'J term.
+      node->residual =
+        node->dynamics->mass * *node->var - node->dynamics->momentum;
+    }
+    for (factor_data_t* item : active_factors) {
       for (std::size_t i = 0; i < item->nodes.size(); ++i) {
-        if (iter == 0) {
-          item->jx[i] = item->jacobians[i] * *item->nodes[i]->var;
-        }
+        item->jx[i] = item->jacobians[i] * *item->nodes[i]->var;
+        item->auxiliary[i] = beta * item->jx[i] - item->impulse;
+        item->nodes[i]->residual -=
+          item->jacobians[i].transpose() * item->impulse;
         primal_var_norm = std::max(
           primal_var_norm,
           (item->jx[i].array() * item->scale_inv.array())
             .cwiseAbs().maxCoeff());
       }
-      dual_var_norm = std::max(
-        dual_var_norm, item->impulse.cwiseAbs().maxCoeff());
-      primal_residual = std::max(
-        primal_residual, item->residual.cwiseAbs().maxCoeff());
     }
-    beta_ratio = 1.0;
-
+    // Check only after a complete sweep: both residuals and their scales
+    // describe the impulse/velocity pair that will be returned, including
+    // when the iteration budget is exhausted.
     Scalar dual_residual = 0.0;
     for (node_data_t* node : active_nodes) {
       dual_residual = std::max(
         dual_residual, node->residual.cwiseAbs().maxCoeff());
+      // Scale stationarity by generalized momentum, in the same coordinates
+      // as its residual, rather than by the row-scaled contact multiplier.
+      Vector6 const mv = node->dynamics->mass * *node->var;
+      Vector6 const jt_impulse =
+        mv - node->dynamics->momentum - node->residual;
+      dual_var_norm = std::max({
+        dual_var_norm, mv.cwiseAbs().maxCoeff(),
+        node->dynamics->momentum.cwiseAbs().maxCoeff(),
+        jt_impulse.cwiseAbs().maxCoeff()});
     }
     Scalar const primal_tol =
       config.tol_abs + config.tol_rel * primal_var_norm;
@@ -325,8 +366,9 @@ simulation_solver_stats_t ConstraintSolver::solve(
     stats.iters = iter + 1;
     stats.primal_residual = primal_residual;
     stats.dual_residual = dual_residual;
-    if (iter > 0 &&
-        primal_residual < primal_tol && dual_residual < dual_tol) {
+    // Cold auxiliaries start at zero, so the first projection can have zero
+    // impulse change before it has seen the body's contact velocity.
+    if (iter > 0 && primal_residual < primal_tol && dual_residual < dual_tol) {
       stats.converged = true;
       break;
     }
@@ -346,64 +388,29 @@ simulation_solver_stats_t ConstraintSolver::solve(
       }
     }
 
-    if (iter % config.beta_update_interval == 0) {
-      if (iter > 0) {
-        Scalar const primal_ratio = primal_var_norm > 0.0
-          ? primal_residual / primal_var_norm
-          : 0.0;
-        Scalar const dual_ratio = dual_var_norm > 0.0
-          ? dual_residual / dual_var_norm
-          : 0.0;
-        Scalar const candidate = dual_ratio > 0.0
-          ? std::sqrt(primal_ratio / dual_ratio)
-          : 1.0;
-        if (std::isfinite(candidate) && candidate > 0.0) {
-          Scalar const beta_new = std::clamp(
-            beta * candidate, config.beta_min, config.beta_max);
-          beta_ratio = beta_new / beta;
+    if ((iter + 1) % config.beta_update_interval == 0 &&
+        iter + 1 < config.max_iters) {
+      Scalar const primal_ratio = primal_var_norm > 0.0
+        ? primal_residual / primal_var_norm : 0.0;
+      Scalar const dual_ratio = dual_var_norm > 0.0
+        ? dual_residual / dual_var_norm : 0.0;
+      Scalar const candidate = dual_ratio > 0.0
+        ? std::sqrt(primal_ratio / dual_ratio) : 1.0;
+      if (std::isfinite(candidate) && candidate > 0.0) {
+        Scalar const beta_new = std::clamp(
+          beta * candidate, config.beta_min, config.beta_max);
+        if (beta_new != beta) {
+          // y = beta * Jv - lambda. Preserve Jv and lambda while changing
+          // beta, before the next projection, RHS assembly, and node solve.
+          Scalar const ratio = beta_new / beta;
+          for (factor_data_t* item : active_factors) {
+            for (vector_x_t& y : item->auxiliary) {
+              y = ratio * (y + item->impulse) - item->impulse;
+            }
+          }
           beta = beta_new;
+          factorize();
         }
-      }
-
-      if (iter == 0) {
-        for (node_data_t* node : active_nodes) {
-          node->lhs = node->dynamics->mass;
-        }
-        for (factor_data_t* item : active_factors) {
-          for (std::size_t i = 0; i < item->nodes.size(); ++i) {
-            item->nodes[i]->lhs += beta *
-              item->jacobians[i].transpose() * item->jacobians[i];
-          }
-        }
-        for (node_data_t* node : active_nodes) {
-          node->lhs_llt.compute(node->lhs);
-          if (node->lhs_llt.info() != Eigen::Success) {
-            throw std::runtime_error("simulation factorization failed");
-          }
-        }
-      } else if (beta_ratio != 1.0) {
-        for (node_data_t* node : active_nodes) {
-          node->lhs *= beta_ratio;
-          node->lhs.noalias() +=
-            (1.0 - beta_ratio) * node->dynamics->mass;
-          node->lhs_llt.compute(node->lhs);
-          if (node->lhs_llt.info() != Eigen::Success) {
-            throw std::runtime_error("simulation factorization failed");
-          }
-        }
-      }
-    }
-
-    for (node_data_t* node : active_nodes) {
-      *node->var = node->lhs_llt.solve(node->rhs);
-      node->residual = node->rhs - node->dynamics->momentum;
-    }
-    for (factor_data_t* item : active_factors) {
-      for (std::size_t i = 0; i < item->nodes.size(); ++i) {
-        item->jx[i] = item->jacobians[i] * *item->nodes[i]->var;
-        item->auxiliary[i] = beta * item->jx[i] - item->impulse;
-        item->nodes[i]->residual -=
-          item->jacobians[i].transpose() * item->impulse;
       }
     }
   }
