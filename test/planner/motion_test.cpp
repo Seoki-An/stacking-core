@@ -108,6 +108,9 @@ int main() {
     motion_planning_config_t {.max_iters = 1});
   require(colliding.status == solve_status_e::infeasible);
   require(colliding.failure.code == "collision_or_joint_limit");
+  require(colliding.failure.message.find("collision entities=") != std::string::npos);
+  require(colliding.failure.message.find("gap_m=") != std::string::npos);
+  require(colliding.failure.message.find("sample=") != std::string::npos);
   motion_planning_config_t alm_config;
   alm_config.collision_alm_enabled = true;
   alm_config.collision_alm_max_iters = 2;
@@ -116,6 +119,7 @@ int main() {
     free_motion_problem_t {scene, make_robot(), {stationary}}, alm_config);
   require(still_colliding.status == solve_status_e::infeasible);
   require(still_colliding.failure.code == "collision_or_joint_limit");
+  require(still_colliding.failure.message.find("collision entities=") != std::string::npos);
   alm_config.collision_alm_beta_increase = 0.0;
   require(solve_free_motion(
     free_motion_problem_t {scene, make_robot(), {stationary}}, alm_config).status ==

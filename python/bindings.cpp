@@ -12,4 +12,5 @@ NB_MODULE(_native, module) {
   stacking_core::python::bind_planner_grasp(module);
   stacking_core::python::bind_planner_motion(module);
   stacking_core::python::bind_planner_pick_place(module);
+  stacking_core::python::bind_planner_excavator(module);
 }

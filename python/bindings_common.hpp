@@ -123,6 +123,7 @@ void bind_scene(nb::module_ &module);
 void bind_kinematics(nb::module_ &module);
 void bind_planner_types(nb::module_ &module);
 void bind_planner_grasp(nb::module_ &module);
+void bind_planner_excavator(nb::module_ &module);
 void bind_planner_motion(nb::module_ &module);
 void bind_planner_pick_place(nb::module_ &module);
 

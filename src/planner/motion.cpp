@@ -12,6 +12,7 @@
 #include <numbers>
 #include <optional>
 #include <span>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -45,6 +46,11 @@ namespace stacking_core {
       Scalar cost = 0.0;
       Eigen::VectorXd grad;
       Scalar max_collision_violation = 0.0;
+      EntityId collision_first;
+      EntityId collision_second;
+      int collision_sample = -1;
+      Scalar collision_gap = 0.0;
+      Scalar collision_margin = 0.0;
       std::map<collision_key_t, Scalar> collision_violations;
     };
 
@@ -557,8 +563,14 @@ namespace stacking_core {
         }
         auto record_violation = [&](Scalar gap) {
           Scalar const violation = feasibility_margin - gap;
-          evaluation.max_collision_violation =
-            std::max(evaluation.max_collision_violation, violation);
+          if (violation > evaluation.max_collision_violation) {
+            evaluation.max_collision_violation = violation;
+            evaluation.collision_first = pair.first.entity;
+            evaluation.collision_second = pair.second.entity;
+            evaluation.collision_sample = t;
+            evaluation.collision_gap = gap;
+            evaluation.collision_margin = feasibility_margin;
+          }
         };
         auto record_constraint = [&](Scalar gap, Eigen::RowVectorXd d_gap) {
           if (alm == nullptr) {
@@ -927,6 +939,38 @@ namespace stacking_core {
       for (Eigen::VectorXd const& q : path) {
         feasible = feasible && model.positionsWithinLimits(q);
       }
+      std::ostringstream failure_detail;
+      if (!feasible) {
+        failure_detail << "optimized motion violates a collision or joint constraint";
+        if (path_eval.max_collision_violation > 0.0) {
+          failure_detail << "; collision entities="
+                         << path_eval.collision_first.value() << ","
+                         << path_eval.collision_second.value()
+                         << " sample=" << path_eval.collision_sample
+                         << " gap_m=" << path_eval.collision_gap
+                         << " required_gap_m=" << path_eval.collision_margin
+                         << " violation_m=" << path_eval.max_collision_violation;
+        }
+        for (std::size_t t = 0; t < path.size(); ++t) {
+          if (model.positionsWithinLimits(path[t])) {
+            continue;
+          }
+          for (std::size_t j = 0; j < model.jointCount(); ++j) {
+            auto const& joint = model.joint(j);
+            if (!joint.limit.has_value()) {
+              continue;
+            }
+            Scalar const position = model.jointPosition(joint.id, path[t]);
+            if (position < joint.limit->lower || position > joint.limit->upper) {
+              failure_detail << "; joint=" << joint.id.value()
+                             << " sample=" << t << " position=" << position
+                             << " lower=" << joint.limit->lower
+                             << " upper=" << joint.limit->upper;
+            }
+          }
+          break;
+        }
+      }
       std::vector<std::optional<pose_t>> target_path(
         static_cast<std::size_t>(steps));
       if (context.attachment.has_value()) {
@@ -954,8 +998,7 @@ namespace stacking_core {
           ? planner_failure_t {}
           : planner_failure_t {
               .code = "collision_or_joint_limit",
-              .message =
-                "optimized motion violates a collision or joint constraint",
+              .message = failure_detail.str(),
               .retryable = true,
             },
       };

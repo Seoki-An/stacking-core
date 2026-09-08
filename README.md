@@ -344,3 +344,18 @@ combination and leaves no scene at its outer iteration limit.
 
 The point-cloud posegen variant and the deprecated `poseinit` module are not
 part of stacking-core.
+
+### Excavator Python IK initialization
+
+`configure_excavator_ik(robot, joint_names, end_link, end_from_tool)` installs
+an owned native seed callback on `MotionRobot`. Supply the six ordered swing,
+boom, arm, bucket, tilt, and rotate joint names, the final moving link, and its
+fixed transform to `robot.tool_link`. `excavator_ik_seed(robot, frame_from_tool)`
+returns a seed or `None` for an unreachable request. Motion solving refines the
+seed with the configured generic IK solver. The callback holds the model alive
+and runs without Python callbacks in native worker threads.
+
+The optional excavator extension accepts the original reference chain and the
+commissioned stacking-planner VDK23 chain (calibrated bucket and wrist zero
+orientations). It rejects other geometry. The Python module links this
+extension; the generic C++ planner remains independent of it.

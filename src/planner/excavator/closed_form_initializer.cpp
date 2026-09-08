@@ -203,19 +203,33 @@ namespace stacking_core {
         rpy(0.0, 0.0, 0.0), rpy(0.0, 1.07374, 0.0), rpy(0.0, -2.7182, 0.0),
         rpy(0.0, 0.0, 0.0), rpy(0.0, -1.5708, 0.0), rpy(3.1415, -1.5708, 0.0),
       };
+      // The commissioned stacking-planner chain retains the same link lengths
+      // and axes, with a calibrated bucket zero and full-precision wrist axes.
+      // The analytic solution remains a seed; LM uses the actual model.
+      std::array<Quaternion, 6> const commissioned_orientations {
+        rpy(0.0, 0.0, 0.0), rpy(0.0, 1.07374, 0.0), rpy(0.0, -2.7182, 0.0),
+        rpy(0.0, 0.075, 0.0), rpy(0.0, -std::numbers::pi / 2.0, 0.0),
+        rpy(std::numbers::pi, -std::numbers::pi / 2.0, 0.0),
+      };
+      bool reference = true;
+      bool commissioned = true;
       constexpr Scalar tol = 2e-3;
       for (std::size_t i = 0; i < chain_joints.size(); ++i) {
         kinematic_joint_t const& joint = model->joint(chain_joints[i]);
         if (
           !joint.axis.isApprox(expected_axes[i], 1e-8) ||
           (joint.parent_from_child_zero.position - expected_origins[i])
-              .norm() >= tol ||
-          joint.parent_from_child_zero.orientation.angularDistance(
-            expected_orientations[i]) >= 1e-8) {
+              .norm() >= tol) {
           return false;
         }
+        reference = reference &&
+          joint.parent_from_child_zero.orientation.angularDistance(
+            expected_orientations[i]) < 1e-8;
+        commissioned = commissioned &&
+          joint.parent_from_child_zero.orientation.angularDistance(
+            commissioned_orientations[i]) < 1e-8;
       }
-      return true;
+      return reference || commissioned;
     }
 
   }  // namespace

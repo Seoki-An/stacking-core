@@ -20,6 +20,7 @@ nanobind_add_module(
   bindings_planner_types.cpp
   bindings_planner_grasp.cpp
   bindings_planner_motion.cpp
+  bindings_planner_excavator.cpp
   bindings_planner_pick_place.cpp
 )
 target_compile_features(stacking-core-python PRIVATE cxx_std_20)
@@ -29,6 +30,7 @@ target_link_libraries(
     stacking-core-simulation
     stacking-core-posegen
     stacking-core-planner
+    stacking-core-planner-excavator
 )
 set(
   STACKING_CORE_PYTHON_OUTPUT_DIR

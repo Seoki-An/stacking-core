@@ -3,6 +3,7 @@
 from . import _native
 
 __all__ = [
+    "configure_excavator_ik", "excavator_ik_seed",
     "Attachment", "BodyInstance", "BodyModel", "CollisionBodyPair",
     "CollisionPair", "ContactConfig", "ContactFeature", "ContactModel",
     "DirectPlanConfig", "DirectPlanProblem", "FreeMotionProblem",

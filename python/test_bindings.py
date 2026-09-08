@@ -391,5 +391,40 @@ class PlannerBindingsTest(unittest.TestCase):
         self.assertGreater(after, before)
 
 
+
+class ExcavatorBindingsTest(unittest.TestCase):
+    def test_commissioned_initializer_owns_model_and_refines_seed(self):
+        urdf = stacking_core.load_urdf_model(str(ASSET_DIR / "stacking_planner_excavator_kinematics.urdf"))
+        model = urdf.kinematics
+        state = stacking_core.KinematicState(1, model)
+        state.positions = np.array([-.5, .4, -.7, -1., .1, .2])
+        # Use the final moving link directly so this regression needs no SciPy.
+        end = model.find_link("cs_rotate")
+        robot = stacking_core.MotionRobot(state, end, identity_pose())
+        names = ["upper_body_joint", "boom_joint", "arm_joint", "bucket_joint", "tilt_joint", "rotate_joint"]
+        stacking_core.configure_excavator_ik(robot, names, "cs_rotate", identity_pose())
+        target = state.link_pose(end).copy()
+        del state, model, urdf
+        gc.collect()
+        seed = stacking_core.excavator_ik_seed(robot, target)
+        self.assertIsNotNone(seed)
+        self.assertTrue(np.all(np.isfinite(seed)))
+        seeded = robot.initial_state
+        seeded.positions = seed
+        config = stacking_core.InverseKinematicsConfig()
+        config.initialization = stacking_core.InverseKinematicsInitialization.PROVIDED
+        config.max_iters = 2000
+        result = stacking_core.solve_inverse_kinematics(
+            stacking_core.InverseKinematicsProblem(seeded, end, target), config)
+        self.assertEqual(result.status, stacking_core.SolveStatus.SUCCESS)
+        self.assertLess(result.pos_error ** 2 + result.rot_error, config.tol)
+        with self.assertRaisesRegex(ValueError, "six joint names"):
+            stacking_core.configure_excavator_ik(robot, names[:5], "cs_rotate", identity_pose())
+        with self.assertRaisesRegex(ValueError, "unknown excavator joint"):
+            stacking_core.configure_excavator_ik(robot, ["missing", *names[1:]], "cs_rotate", identity_pose())
+        target[0] += 100.
+        self.assertIsNone(stacking_core.excavator_ik_seed(robot, target))
+
+
 if __name__ == "__main__":
     unittest.main()
