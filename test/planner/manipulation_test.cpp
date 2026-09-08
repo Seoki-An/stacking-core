@@ -191,6 +191,11 @@ int main() {
   require(
     direct.selected_candidate()->segments[2].mode == motion_mode_e::attached);
   require_continuous(*direct.selected_candidate());
+  auto const& retreat = direct.selected_candidate()->segments[1];
+  require(retreat.stage == planning_stage_e::pick_retreat);
+  require(retreat.trajectory.samples.size() == static_cast<std::size_t>(
+    direct_config.grasp_steps + direct_config.move_steps));
+  require(retreat.trajectory.samples.back().robot.positions.isApprox(q_home, 1e-8));
   for (plan_segment_t const& segment : direct.selected_candidate()->segments) {
     for (trajectory_sample_t const& sample : segment.trajectory.samples) {
       require(sample.frame_from_target.has_value());

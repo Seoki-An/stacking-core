@@ -2,6 +2,8 @@
 #include <stacking_core/planner/inverse_kinematics.hpp>
 #include <stacking_core/planner/motion.hpp>
 
+#include "collision_alm.hpp"
+
 #include <Eigen/Cholesky>
 
 #include <algorithm>
@@ -18,6 +20,9 @@
 
 namespace stacking_core {
   namespace {
+
+    using planner_detail::collision_alm_state_t;
+    using planner_detail::collision_key_t;
 
     constexpr int bt_max = 20;
     constexpr Scalar bt_shrink = 0.5;
@@ -40,11 +45,17 @@ namespace stacking_core {
       Scalar cost = 0.0;
       Eigen::VectorXd grad;
       Scalar max_collision_violation = 0.0;
+      std::map<collision_key_t, Scalar> collision_violations;
     };
 
     struct moving_body_t {
       BodyInstance body;
       Matrix6X jac;
+    };
+
+    struct collision_constraint_t {
+      Scalar violation;
+      Eigen::RowVectorXd d_gap;
     };
 
     struct segment_result_t {
@@ -100,6 +111,14 @@ namespace stacking_core {
         config.grasped_boundary_rot_scale > 0.0 &&
         std::isfinite(config.target_collision_tol) &&
         config.target_collision_tol >= 0.0 && std::isfinite(config.step_size) &&
+        std::isfinite(config.collision_penetration_clamp) &&
+        config.collision_alm_max_iters > 0 &&
+        std::isfinite(config.collision_alm_beta_init) &&
+        std::isfinite(config.collision_alm_beta_increase) &&
+        config.collision_alm_beta_increase >= 1.0 &&
+        std::isfinite(config.collision_alm_tol) && config.collision_alm_tol >= 0.0 &&
+        (!config.collision_alm_enabled || config.collision_alm_beta_init > 0.0 ||
+         config.collision_weight > 0.0) &&
         config.step_size > 0.0 && config.max_iters > 0 &&
         std::isfinite(config.tol) && config.tol > 0.0 &&
         config.ik_max_iters > 0 && std::isfinite(config.ik_tol) &&
@@ -447,7 +466,8 @@ namespace stacking_core {
     void add_collision_terms(
       solver_context_t const& context, KinematicSnapshot const& kinematics,
       int t, int steps, Scalar dt, Scalar& cost,
-      Eigen::Ref<Eigen::VectorXd> grad, Scalar& max_violation) {
+      Eigen::Ref<Eigen::VectorXd> grad, path_evaluation_t& evaluation,
+      collision_alm_state_t const* alm) {
       std::vector<moving_body_t> moving = moving_bodies(context, kinematics);
       if (moving.empty()) {
         return;
@@ -513,6 +533,10 @@ namespace stacking_core {
 
       std::vector<collision_pair_t> const geometry_pairs =
         brute_force_middle_phase(view, body_pairs);
+      // One PHR constraint on the representative (deepest) feature of each
+      // body pair, plus a clearance term on every geometry feature, as in
+      // legacy process_pair. Stable entity IDs replace its gripper-side IDs.
+      std::map<collision_key_t, collision_constraint_t> constraints;
       for (collision_pair_t const& pair : geometry_pairs) {
         Geometry const& first_geometry = snapshot->body(pair.first.entity)
                                            .model()
@@ -531,20 +555,43 @@ namespace stacking_core {
         if (involves_target && !involves_plane) {
           feasibility_margin = -context.config.target_collision_tol;
         }
+        auto record_violation = [&](Scalar gap) {
+          Scalar const violation = feasibility_margin - gap;
+          evaluation.max_collision_violation =
+            std::max(evaluation.max_collision_violation, violation);
+        };
+        auto record_constraint = [&](Scalar gap, Eigen::RowVectorXd d_gap) {
+          if (alm == nullptr) {
+            return;
+          }
+          collision_key_t const key {
+            t, std::min(pair.first.entity, pair.second.entity),
+            std::max(pair.first.entity, pair.second.entity)};
+          Scalar const c = feasibility_margin - gap;
+          auto const it = constraints.find(key);
+          if (it == constraints.end() || c > it->second.violation) {
+            constraints.insert_or_assign(
+              key, collision_constraint_t {c, std::move(d_gap)});
+          }
+        };
 
         diffable_contact_feature_t feature;
         try {
           feature = compute_diffable_contact(*snapshot, pair);
         } catch (std::invalid_argument const&) {
           contact_feature_t const contact = compute_contact(*snapshot, pair);
-          max_violation =
-            std::max(max_violation, feasibility_margin - contact.gap);
+          record_violation(contact.gap);
+          record_constraint(contact.gap, Eigen::RowVectorXd::Zero(grad.size()));
           continue;
         }
         Scalar const penetration =
           std::max(context.config.collision_margin - feature.gap, Scalar {0.0});
-        cost += 0.5 * dt * context.config.collision_weight * penetration *
-          penetration;
+        Scalar const clamp = context.config.collision_penetration_clamp;
+        Scalar const pen_grad = clamp > 0.0 ? std::min(penetration, clamp) : penetration;
+        Scalar const pen_cost = pen_grad * (penetration - 0.5 * pen_grad);
+        Scalar const weight = dt * context.config.collision_weight *
+          (alm != nullptr ? 0.1 : 1.0);
+        cost += weight * pen_cost;
         Eigen::RowVectorXd d_gap = Eigen::RowVectorXd::Zero(grad.size());
         auto const first = jac_by_entity.find(pair.first.entity);
         if (first != jac_by_entity.end()) {
@@ -554,18 +601,24 @@ namespace stacking_core {
         if (second != jac_by_entity.end()) {
           d_gap += feature.d_gap.rightCols<6>() * *second->second;
         }
-        grad -= dt * context.config.collision_weight * penetration *
-          d_gap.transpose();
+        grad -= weight * pen_grad * d_gap.transpose();
 
-        max_violation =
-          std::max(max_violation, feasibility_margin - feature.gap);
+        record_violation(feature.gap);
+        record_constraint(feature.gap, std::move(d_gap));
+      }
+      for (auto const& [key, constraint] : constraints) {
+        auto const term = planner_detail::collision_alm_term(
+          alm->multiplier(key), alm->beta, constraint.violation);
+        cost += term.cost;
+        grad -= term.d_violation * constraint.d_gap.transpose();
+        evaluation.collision_violations.emplace(key, constraint.violation);
       }
     }
 
     path_evaluation_t evaluate_path(
       solver_context_t const& context, std::vector<Eigen::VectorXd> const& path,
       Eigen::VectorXd const& q_init, Eigen::VectorXd const& q_goal,
-      pose_t const& tool_goal) {
+      pose_t const& tool_goal, collision_alm_state_t const* alm = nullptr) {
       int const steps = static_cast<int>(path.size());
       int const dof = static_cast<int>(q_init.size());
       Scalar const dt = 1.0 / steps;
@@ -577,11 +630,8 @@ namespace stacking_core {
                  context.config.smooth_boundary_alpha * (1.0 - dist / T_half));
       };
 
-      path_evaluation_t result {
-        .cost = 0.0,
-        .grad = Eigen::VectorXd::Zero(steps * dof),
-        .max_collision_violation = 0.0,
-      };
+      path_evaluation_t result;
+      result.grad = Eigen::VectorXd::Zero(steps * dof);
       auto grad_at = [&](int t) { return result.grad.segment(t * dof, dof); };
 
       Eigen::VectorXd const dq_start =
@@ -650,7 +700,7 @@ namespace stacking_core {
         }
         add_collision_terms(
           context, snapshot, t, steps, dt, result.cost, grad_at(t),
-          result.max_collision_violation);
+          result, alm);
       }
       return result;
     }
@@ -712,116 +762,149 @@ namespace stacking_core {
       Eigen::LDLT<Eigen::MatrixXd> const A_swing_solver {A_swing};
 
       int const dof = static_cast<int>(q_init.size());
-      std::vector<Eigen::VectorXd> y = path;
-      std::vector<Eigen::VectorXd> path_new(static_cast<std::size_t>(steps));
-      Scalar momentum_prev = 1.0;
       Scalar alpha = context.config.step_size;
-      path_evaluation_t path_eval =
-        evaluate_path(context, path, q_init, q_goal, tool_goal);
       Scalar path_change = std::numeric_limits<Scalar>::infinity();
       int iters = 0;
       bool converged = false;
-      for (int iter = 0; iter < context.config.max_iters; ++iter) {
-        path_evaluation_t const eval_y =
-          evaluate_path(context, y, q_init, q_goal, tool_goal);
-        Eigen::MatrixXd grad(steps, dof);
-        for (int t = 0; t < steps; ++t) {
-          grad.row(t) = eval_y.grad.segment(t * dof, dof).transpose();
-        }
-        Eigen::MatrixXd natural_grad = A_solver.solve(grad);
-        if (dof > 0 && context.config.swing_smoothness_scale != 1.0) {
-          natural_grad.col(0) = A_swing_solver.solve(grad.col(0));
-        }
-
-        alpha *= bt_grow;
-        path_evaluation_t eval_new = eval_y;
-        for (int bt = 0; bt < bt_max; ++bt) {
-          Eigen::MatrixXd dx = Eigen::MatrixXd::Zero(steps, dof);
-          Scalar grad_dot_dx = 0.0;
+      collision_alm_state_t alm_state {
+        .beta = context.config.collision_alm_beta_init > 0.0
+          ? context.config.collision_alm_beta_init : context.config.collision_weight,
+        .duals = {},
+      };
+      collision_alm_state_t const* alm =
+        context.config.collision_alm_enabled ? &alm_state : nullptr;
+      int const outer_max = alm != nullptr ? context.config.collision_alm_max_iters : 1;
+      Scalar prev_violation = std::numeric_limits<Scalar>::infinity();
+      path_evaluation_t path_eval;
+      for (int outer = 0; outer < outer_max; ++outer) {
+        // Restart FISTA for the changed augmented objective, retaining the
+        // accepted path and line-search step as the legacy outer loop does.
+        std::vector<Eigen::VectorXd> y = path;
+        std::vector<Eigen::VectorXd> path_new(static_cast<std::size_t>(steps));
+        Scalar momentum_prev = 1.0;
+        converged = false;
+        path_eval = evaluate_path(context, path, q_init, q_goal, tool_goal, alm);
+        for (int iter = 0; iter < context.config.max_iters; ++iter) {
+          path_evaluation_t const eval_y =
+            evaluate_path(context, y, q_init, q_goal, tool_goal, alm);
+          Eigen::MatrixXd grad(steps, dof);
           for (int t = 0; t < steps; ++t) {
-            bool const pinned = t == 0 ||
-              (context.mode == planning_mode_e::free && t == steps - 1);
-            if (pinned) {
-              path_new[static_cast<std::size_t>(t)] =
-                y[static_cast<std::size_t>(t)];
+            grad.row(t) = eval_y.grad.segment(t * dof, dof).transpose();
+          }
+          Eigen::MatrixXd natural_grad = A_solver.solve(grad);
+          if (dof > 0 && context.config.swing_smoothness_scale != 1.0) {
+            natural_grad.col(0) = A_swing_solver.solve(grad.col(0));
+          }
+
+          alpha *= bt_grow;
+          path_evaluation_t eval_new = eval_y;
+          for (int bt = 0; bt < bt_max; ++bt) {
+            Eigen::MatrixXd dx = Eigen::MatrixXd::Zero(steps, dof);
+            Scalar grad_dot_dx = 0.0;
+            for (int t = 0; t < steps; ++t) {
+              bool const pinned = t == 0 ||
+                (context.mode == planning_mode_e::free && t == steps - 1);
+              if (pinned) {
+                path_new[static_cast<std::size_t>(t)] =
+                  y[static_cast<std::size_t>(t)];
+              } else {
+                path_new[static_cast<std::size_t>(t)] = clamp(
+                  y[static_cast<std::size_t>(t)] -
+                    alpha * natural_grad.row(t).transpose(),
+                  context.bounds);
+              }
+              dx.row(t) = (path_new[static_cast<std::size_t>(t)] -
+                           y[static_cast<std::size_t>(t)])
+                            .transpose();
+              grad_dot_dx +=
+                eval_y.grad.segment(t * dof, dof).dot(dx.row(t).transpose());
+            }
+            Scalar metric_norm_sq = 0.0;
+            for (int t = 0; t < steps; ++t) {
+              Scalar diagonal = boundary_diag(t);
+              if (t > 0) {
+                diagonal += smooth_weight(t - 1);
+              }
+              if (t < steps - 1) {
+                diagonal += smooth_weight(t);
+              }
+              metric_norm_sq += diagonal * dx.row(t).squaredNorm();
+              if (t > 0) {
+                metric_norm_sq -=
+                  smooth_weight(t - 1) * dx.row(t).dot(dx.row(t - 1));
+              }
+              if (t < steps - 1) {
+                metric_norm_sq -= smooth_weight(t) * dx.row(t).dot(dx.row(t + 1));
+              }
+            }
+            if (dof > 0 && context.config.swing_smoothness_scale != 1.0) {
+              for (int t = 0; t < steps - 1; ++t) {
+                Scalar const delta = dx(t + 1, 0) - dx(t, 0);
+                metric_norm_sq += (context.config.swing_smoothness_scale - 1.0) *
+                  smooth_weight(t) * delta * delta;
+              }
+            }
+            eval_new =
+              evaluate_path(context, path_new, q_init, q_goal, tool_goal, alm);
+            Scalar const rhs =
+              eval_y.cost + grad_dot_dx + metric_norm_sq / (2.0 * alpha);
+            if (eval_new.cost <= rhs + 1e-9) {
+              break;
+            }
+            alpha *= bt_shrink;
+          }
+
+          Scalar const momentum_new =
+            0.5 * (1.0 + std::sqrt(1.0 + 4.0 * momentum_prev * momentum_prev));
+          Scalar const beta = (momentum_prev - 1.0) / momentum_new;
+          bool const restart = eval_new.cost > path_eval.cost;
+          path_change = 0.0;
+          for (int t = 0; t < steps; ++t) {
+            Eigen::VectorXd delta = wrapped_difference(
+              path_new[static_cast<std::size_t>(t)],
+              path[static_cast<std::size_t>(t)], context.bounds);
+            path_change = std::max(path_change, delta.cwiseAbs().maxCoeff());
+            bool const pinned =
+              t == 0 || (context.mode == planning_mode_e::free && t == steps - 1);
+            if (pinned || restart) {
+              y[static_cast<std::size_t>(t)] =
+                path_new[static_cast<std::size_t>(t)];
             } else {
-              path_new[static_cast<std::size_t>(t)] = clamp(
-                y[static_cast<std::size_t>(t)] -
-                  alpha * natural_grad.row(t).transpose(),
+              y[static_cast<std::size_t>(t)] = clamp(
+                path_new[static_cast<std::size_t>(t)] + beta * delta,
                 context.bounds);
             }
-            dx.row(t) = (path_new[static_cast<std::size_t>(t)] -
-                         y[static_cast<std::size_t>(t)])
-                          .transpose();
-            grad_dot_dx +=
-              eval_y.grad.segment(t * dof, dof).dot(dx.row(t).transpose());
           }
-          Scalar metric_norm_sq = 0.0;
-          for (int t = 0; t < steps; ++t) {
-            Scalar diagonal = boundary_diag(t);
-            if (t > 0) {
-              diagonal += smooth_weight(t - 1);
-            }
-            if (t < steps - 1) {
-              diagonal += smooth_weight(t);
-            }
-            metric_norm_sq += diagonal * dx.row(t).squaredNorm();
-            if (t > 0) {
-              metric_norm_sq -=
-                smooth_weight(t - 1) * dx.row(t).dot(dx.row(t - 1));
-            }
-            if (t < steps - 1) {
-              metric_norm_sq -= smooth_weight(t) * dx.row(t).dot(dx.row(t + 1));
-            }
-          }
-          if (dof > 0 && context.config.swing_smoothness_scale != 1.0) {
-            for (int t = 0; t < steps - 1; ++t) {
-              Scalar const delta = dx(t + 1, 0) - dx(t, 0);
-              metric_norm_sq += (context.config.swing_smoothness_scale - 1.0) *
-                smooth_weight(t) * delta * delta;
-            }
-          }
-          eval_new =
-            evaluate_path(context, path_new, q_init, q_goal, tool_goal);
-          Scalar const rhs =
-            eval_y.cost + grad_dot_dx + metric_norm_sq / (2.0 * alpha);
-          if (eval_new.cost <= rhs + 1e-9) {
+          momentum_prev = restart ? 1.0 : momentum_new;
+          path = path_new;
+          path_eval = std::move(eval_new);
+          ++iters;
+          if (path_change < context.config.tol) {
+            converged = true;
             break;
           }
-          alpha *= bt_shrink;
         }
 
-        Scalar const momentum_new =
-          0.5 * (1.0 + std::sqrt(1.0 + 4.0 * momentum_prev * momentum_prev));
-        Scalar const beta = (momentum_prev - 1.0) / momentum_new;
-        bool const restart = eval_new.cost > path_eval.cost;
-        path_change = 0.0;
-        for (int t = 0; t < steps; ++t) {
-          Eigen::VectorXd delta = wrapped_difference(
-            path_new[static_cast<std::size_t>(t)],
-            path[static_cast<std::size_t>(t)], context.bounds);
-          path_change = std::max(path_change, delta.cwiseAbs().maxCoeff());
-          bool const pinned =
-            t == 0 || (context.mode == planning_mode_e::free && t == steps - 1);
-          if (pinned || restart) {
-            y[static_cast<std::size_t>(t)] =
-              path_new[static_cast<std::size_t>(t)];
-          } else {
-            y[static_cast<std::size_t>(t)] = clamp(
-              path_new[static_cast<std::size_t>(t)] + beta * delta,
-              context.bounds);
-          }
-        }
-        momentum_prev = restart ? 1.0 : momentum_new;
-        path = path_new;
-        path_eval = std::move(eval_new);
-        iters = iter + 1;
-        if (path_change < context.config.tol) {
-          converged = true;
+        if (alm == nullptr) {
           break;
         }
+        // path_eval is the measurement at the accepted path. Trial-point
+        // evaluations never mutate multipliers or the penalty parameter.
+        Scalar const violation = path_eval.max_collision_violation;
+        alm_state.update(path_eval.collision_violations);
+        if (violation <= context.config.collision_alm_tol || outer + 1 == outer_max) {
+          break;
+        }
+        if (violation > 0.5 * prev_violation) {
+          Scalar const next_beta =
+            alm_state.beta * context.config.collision_alm_beta_increase;
+          if (!std::isfinite(next_beta)) {
+            break;
+          }
+          alm_state.beta = next_beta;
+        }
+        prev_violation = violation;
       }
-
       for (Eigen::Index j = 0; j < q_init.size(); ++j) {
         if (!context.bounds.full_revolution[static_cast<std::size_t>(j)]) {
           continue;

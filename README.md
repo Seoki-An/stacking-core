@@ -181,6 +181,28 @@ generic IK solver. A robot-specific seed can be supplied through
 `ik_initializer` without coupling the planner to the optional excavator
 extension.
 
+Motion planning can optionally use legacy diffsim's PHR augmented-Lagrangian
+collision enforcement (`collision_alm_enabled`). Free and grasped motion share
+the same implementation: one multiplier per sampled body pair's deepest
+contact, a 10% clearance penalty on all geometry features, and an outer loop
+around the existing metric-preconditioned FISTA solve. Multipliers are local
+to each segment/solve, so concurrent planners do not share optimization state.
+`collision_penetration_clamp` enables the legacy Huber clearance penalty.
+The tabletop consumer explicitly enables these controls in its `motion.yml`;
+the core default remains the original fixed-penalty path.
+
+`collision_alm_tol` controls outer-loop termination only. Final collision
+margins and joint-limit checks are unchanged: unlike legacy's extra held-body
+ALM allowance, it does not permit extra penetration. A path within the outer
+tolerance can therefore still be rejected by the final check. Inner iteration
+counts are accumulated over all outer solves.
+
+Direct pick-and-place now retreats through the pick approach subgoal and home
+before switching to the place scene. Transfer starts at the actual retreat
+endpoint using the same measured attachment, preserving carried-object pose
+continuity. Regrasp's intermediate routing and the simulation profiles are
+unchanged by this port.
+
 Regrasp planning composes stable-pose generation, IK, and the motion solvers.
 Grasp generation stays a separate stage: callers provide scored pick-side and
 place-side `grasp_candidate_t` collections, and the solver preserves each

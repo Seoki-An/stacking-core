@@ -108,6 +108,18 @@ int main() {
     motion_planning_config_t {.max_iters = 1});
   require(colliding.status == solve_status_e::infeasible);
   require(colliding.failure.code == "collision_or_joint_limit");
+  motion_planning_config_t alm_config;
+  alm_config.collision_alm_enabled = true;
+  alm_config.collision_alm_max_iters = 2;
+  alm_config.max_iters = 1;
+  auto const still_colliding = solve_free_motion(
+    free_motion_problem_t {scene, make_robot(), {stationary}}, alm_config);
+  require(still_colliding.status == solve_status_e::infeasible);
+  require(still_colliding.failure.code == "collision_or_joint_limit");
+  alm_config.collision_alm_beta_increase = 0.0;
+  require(solve_free_motion(
+    free_motion_problem_t {scene, make_robot(), {stationary}}, alm_config).status ==
+    solve_status_e::invalid_problem);
 
   motion_robot_t invalid_robot = make_robot();
   invalid_robot.self_collision_pairs.push_back(collision_body_pair_t {

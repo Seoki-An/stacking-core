@@ -367,8 +367,12 @@ namespace stacking_core {
             .robot =
               robot_at(problem.robot, q_at_pick, refined.grasp.grasp.opening),
             .attachment = pick_attachment,
-            .waypoints = {tool_waypoint(
-              problem.robot, pre_pick, config.grasp_steps)},
+            // Keep the carry in the pick scene until it has retreated via
+            // the approach subgoal to home, matching legacy AO_g. The next
+            // segment starts from the actual endpoint with this attachment.
+            .waypoints = {
+              tool_waypoint(problem.robot, pre_pick, config.grasp_steps),
+              joint_waypoint(q_home, config.move_steps)},
           },
           config.motion);
         if (pick_retreat.status == solve_status_e::invalid_problem) {

@@ -50,6 +50,17 @@ void bind_planner_motion(nb::module_ &module) {
               &motion_planning_config_t::grasped_boundary_rot_scale)
       .def_rw("target_collision_tol",
               &motion_planning_config_t::target_collision_tol)
+      .def_rw("collision_penetration_clamp",
+              &motion_planning_config_t::collision_penetration_clamp)
+      .def_rw("collision_alm_enabled",
+              &motion_planning_config_t::collision_alm_enabled)
+      .def_rw("collision_alm_max_iters",
+              &motion_planning_config_t::collision_alm_max_iters)
+      .def_rw("collision_alm_beta_init",
+              &motion_planning_config_t::collision_alm_beta_init)
+      .def_rw("collision_alm_beta_increase",
+              &motion_planning_config_t::collision_alm_beta_increase)
+      .def_rw("collision_alm_tol", &motion_planning_config_t::collision_alm_tol)
       .def_rw("step_size", &motion_planning_config_t::step_size)
       .def_rw("max_iters", &motion_planning_config_t::max_iters)
       .def_rw("tol", &motion_planning_config_t::tol)

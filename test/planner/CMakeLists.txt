@@ -95,6 +95,14 @@ target_link_libraries(
 )
 add_test(NAME stacking-core.planner-regrasp COMMAND stacking-core-planner-regrasp-test)
 
+add_executable(stacking-core-planner-collision-alm-test collision_alm_test.cpp)
+target_include_directories(stacking-core-planner-collision-alm-test
+  PRIVATE "${PROJECT_SOURCE_DIR}/src/planner")
+target_link_libraries(stacking-core-planner-collision-alm-test
+  PRIVATE stacking-core::planner)
+add_test(NAME stacking-core.planner-collision-alm
+  COMMAND stacking-core-planner-collision-alm-test)
+
 add_executable(stacking-core-planner-grasp-test grasp_test.cpp)
 target_include_directories(
   stacking-core-planner-grasp-test

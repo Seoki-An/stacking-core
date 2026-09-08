@@ -80,6 +80,15 @@ namespace stacking_core {
     Scalar grasped_boundary_pos_scale = 10.0;
     Scalar grasped_boundary_rot_scale = 1.0;
     Scalar target_collision_tol = 5e-3;
+    // Legacy Huber clearance penalty; <= 0 keeps the quadratic penalty.
+    Scalar collision_penetration_clamp = 0.0;
+    // Shared free/grasped PHR outer loop. These are optimization controls,
+    // not additional allowances in the final collision feasibility check.
+    bool collision_alm_enabled = false;
+    int collision_alm_max_iters = 5;
+    Scalar collision_alm_beta_init = 0.0;  // <= 0 uses collision_weight.
+    Scalar collision_alm_beta_increase = 2.0;
+    Scalar collision_alm_tol = 1e-3;
     Scalar step_size = 1e-2;
     int max_iters = 500;
     Scalar tol = 1e-6;
