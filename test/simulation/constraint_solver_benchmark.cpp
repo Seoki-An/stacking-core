@@ -108,7 +108,7 @@ error_t measure(problem_t const& problem, simulation_solver_config_t const& conf
     // Uniform rows in these fixtures: recover the unscaled multiplier from
     // the projector output; stationarity is checked independently of stats.
     Scalar const scale = std::sqrt(
-      config.damping / static_cast<Scalar>(factor.entities.size())) / 0.005;
+      config.constraint_scale_reference / static_cast<Scalar>(factor.entities.size())) / 0.005;
     Vector3 const lambda = scale * *problem.impulses[i];
     Vector3 g = factor.error;
     for (std::size_t j = 0; j < factor.entities.size(); ++j) {

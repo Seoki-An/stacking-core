@@ -18,7 +18,7 @@ struct simulation_solver_config_t {
   // Reference scale used to normalise constraint rows against the body mass.
   // It does not regularise the velocity solve: the mass matrix does that, so
   // this value no longer damps motion.
-  Scalar damping = 1e-3;
+  Scalar constraint_scale_reference = 1e-3;
   Scalar beta_init = 1.0;
   int beta_update_interval = 30;
   Scalar beta_min = 1e-4;
@@ -50,6 +50,10 @@ struct simulation_contact_config_t {
 
 struct simulation_config_t {
   Vector3 gravity = Vector3 {0.0, 0.0, -9.81};
+  // Mass-proportional viscous damping D = damping * M, integrated implicitly.
+  // Decay rate in 1/s, shared by linear and angular motion.
+  // Zero preserves undamped dynamics; independent of solver constraint scaling.
+  Scalar damping = 0.0;
   simulation_contact_config_t contact;
   simulation_solver_config_t solver;
 };

@@ -55,7 +55,7 @@ constraint_factor_t scalar_contact(
 
 simulation_solver_config_t fixed_config(Scalar beta) {
   simulation_solver_config_t config;
-  config.damping = 1.0;
+  config.constraint_scale_reference = 1.0;
   config.beta_init = beta;
   config.beta_min = beta;
   config.beta_max = beta;
@@ -156,7 +156,7 @@ void moving_pair() {
     {EntityId {1}, scalar_node(1.0, 1.0)},
     {EntityId {2}, scalar_node(3.0, 0.0)}};
   auto config = fixed_config(1.0);
-  config.damping = 2.0;  // Unit contact scale for the two unit Jacobians.
+  config.constraint_scale_reference = 2.0;  // Unit scale for the two unit Jacobians.
   auto const stats = solver.solve(nodes, config, 1.0);
   require(stats.converged, "moving pair must converge");
   require(std::abs(impulse - 0.75) < 1e-8, "pair impulse analytical solution");

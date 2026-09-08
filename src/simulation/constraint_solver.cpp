@@ -37,7 +37,8 @@ struct factor_data_t {
 };
 
 void validate_config(simulation_solver_config_t const& config) {
-  if (!std::isfinite(config.damping) || config.damping <= 0.0 ||
+  if (!std::isfinite(config.constraint_scale_reference) ||
+      config.constraint_scale_reference <= 0.0 ||
       !std::isfinite(config.beta_init) || config.beta_init <= 0.0 ||
       !std::isfinite(config.beta_min) || config.beta_min <= 0.0 ||
       !std::isfinite(config.beta_max) ||
@@ -95,7 +96,7 @@ simulation_solver_stats_t ConstraintSolver::solve(
     throw std::invalid_argument("simulation dynamics scale must be positive");
   }
 
-  Scalar const damping = config.damping * dynamics_scale;
+  Scalar const scale_reference = config.constraint_scale_reference * dynamics_scale;
   Scalar beta = warm_beta_ > 0.0 ? warm_beta_ : config.beta_init;
   beta = std::clamp(beta, config.beta_min, config.beta_max);
 
@@ -125,7 +126,7 @@ simulation_solver_stats_t ConstraintSolver::solve(
       }
       item.nodes.push_back(&node->second);
       scale_norm_sqrt +=
-        factor.jacobians[i].rowwise().squaredNorm() / damping;
+        factor.jacobians[i].rowwise().squaredNorm() / scale_reference;
     }
     if (!factor.hard_inequality) {
       scale_norm_sqrt.array() += 1.0;

@@ -44,8 +44,9 @@ struct constraint_factor_t {
 //   (mass + beta * sum C' C) v = momentum + sum C' (...)
 // whose fixed point is mass * v = momentum + sum C' impulse.
 struct constraint_node_t {
+  // Effective dynamics matrix M + dt D (physical mass when D is zero).
   Matrix6 mass = Matrix6::Identity();
-  // mass * v0 + force * dt, the momentum the body would carry with no contact.
+  // Physical M * v0 + force * dt, before damping and contact impulses.
   Vector6 momentum = Vector6::Zero();
   // Warm start on entry, solution on exit.
   Vector6 velocity = Vector6::Zero();

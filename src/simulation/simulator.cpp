@@ -30,6 +30,8 @@ using simulation_detail::vector_x_t;
 
 void validate_config(simulation_config_t const& config) {
   if (!config.gravity.allFinite() ||
+      !std::isfinite(config.damping) ||
+      config.damping < 0.0 ||
       !std::isfinite(config.contact.error_reduction_ratio) ||
       config.contact.error_reduction_ratio < 0.0 ||
       config.contact.error_reduction_ratio > 1.0 ||
@@ -354,7 +356,9 @@ public:
       }
       Vector6 const velocity = vectorized(body.motion());
       nodes.emplace(body.id(), constraint_node_t {
-        .mass = M,
+        // Backward Euler for D = d M: (M + dt D) v_next = p + impulse.
+        // Keep physical inertia and the incoming momentum unchanged.
+        .mass = (1.0 + dt * config_.damping) * M,
         .momentum = M * velocity + gravity_force(body, config_.gravity) * dt,
         .velocity = velocity,
       });

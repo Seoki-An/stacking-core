@@ -18,6 +18,29 @@ def identity_pose(z: float = 0.0) -> np.ndarray:
 
 
 class SimulationBindingsTest(unittest.TestCase):
+    def test_constraint_scaling_is_separate_from_physical_damping(self) -> None:
+        config = stacking_core.SimulationConfig()
+        solver = config.solver
+        self.assertEqual(solver.constraint_scale_reference, 0.001)
+        self.assertFalse(hasattr(solver, "damping"))
+        solver.constraint_scale_reference = 0.02
+        config.solver = solver
+        config.damping = 0.003
+        self.assertEqual(config.solver.constraint_scale_reference, 0.02)
+        self.assertEqual(config.damping, 0.003)
+        stacking_core.Simulator(config)
+
+    def test_damping_config(self) -> None:
+        config = stacking_core.SimulationConfig()
+        self.assertEqual(config.damping, 0.0)
+        config.damping = 0.5
+        self.assertEqual(config.damping, 0.5)
+        stacking_core.Simulator(config)
+        for invalid in (-1.0, float("inf"), float("nan")):
+            config.damping = invalid
+            with self.assertRaises(ValueError):
+                stacking_core.Simulator(config)
+
     def test_posegen_wrench_matrix_round_trips(self) -> None:
         objective = stacking_core.PosegenObjectiveConfig()
         expected = 2.0 * np.eye(6)

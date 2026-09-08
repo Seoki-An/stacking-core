@@ -81,7 +81,7 @@ There are 240 cases per tolerance: separating/sliding single-body contacts,
 1/2/4/8/16-body vertical chains, and chains with alternating masses 0.1 and
 10; fixed/adaptive beta; initial beta 0.01/0.1/1/10/100; cold/warm starts.
 Jacobians are dt-scaled with dt=0.005 and zero lever arms; dynamics_scale=1,
-damping=0.001. Stagnation stopping is disabled for this comparison, with the
+constraint_scale_reference=0.001. Stagnation stopping is disabled for this comparison, with the
 same 2000-sweep cap. Warm means a second solve of the *identical* frozen
 problem, retaining the first solve's beta and auxiliaries. Timings are medians
 of five repetitions, excluding fixture construction.

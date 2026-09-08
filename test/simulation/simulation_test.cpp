@@ -1,6 +1,8 @@
 #include <stacking_core/simulation.hpp>
 
 #include <memory>
+#include <cmath>
+#include <limits>
 #include <source_location>
 #include <stdexcept>
 #include <string>
@@ -122,10 +124,76 @@ std::shared_ptr<stacking_core::BodyModel const> model_without_inertial() {
   });
 }
 
+void test_damping() {
+  using namespace stacking_core;
+  auto const model = penetrating_model();
+  SceneSnapshot const scene {scene_snapshot_config_t {
+    .frame = FrameId {1},
+    .bodies = {BodyInstance {body_instance_config_t {
+      .id = EntityId {11},
+      .model = model,
+      .frame_from_body = pose_t {},
+      .motion = motion_t {
+        .linear = Vector3::UnitX(), .angular = Vector3::UnitZ()},
+      .mobility = mobility_e::dynamic,
+    }}},
+  }};
+  for (Scalar const damping : {0.0, 0.001, 0.5, 100.0}) {
+    for (Scalar const dt : {0.01, 0.02}) {
+      simulation_config_t config;
+      config.gravity.setZero();
+      config.damping = damping;
+      Simulator simulator {config};
+      int const steps = static_cast<int>(1.0 / dt);
+      auto const result = simulator.step_n(scene, dt, steps);
+      auto const& body = result.snapshot->body(EntityId {11});
+      // Translation and rotation decay equally despite different mass/inertia.
+      Scalar const decay = std::pow(1.0 + damping * dt, -steps);
+      require(body.motion().linear.isApprox(decay * Vector3::UnitX(), 1e-10));
+      require(body.motion().angular.isApprox(decay * Vector3::UnitZ(), 1e-10));
+      // Physical mass/inertia are not inflated by the implicit solve matrix.
+      require(body.modelPtr() == model);
+      auto const& inertia = body.model().inertial();
+      Scalar const energy = 0.5 * inertia.mass * body.motion().linear.squaredNorm()
+        + 0.5 * body.motion().angular.dot(inertia.inertia * body.motion().angular);
+      Scalar const expected_energy = 1.4 * decay * decay;
+      require(std::abs(energy - expected_energy) < 1e-10);
+      if (damping == 0.5) {
+        require(std::abs(decay - std::exp(-damping)) < 0.002);
+      }
+    }
+  }
+  // Gravity enters the RHS; pose integration uses the newly solved velocity.
+  simulation_config_t gravity_config;
+  gravity_config.damping = 0.5;
+  Simulator gravity_simulator {gravity_config};
+  Scalar const dt = 0.01;
+  auto const gravity_result = gravity_simulator.step(scene, dt);
+  auto const& falling = gravity_result.snapshot->body(EntityId {11});
+  Vector3 const expected_velocity =
+    (2.0 * Vector3::UnitX() + dt * 2.0 * gravity_config.gravity)
+    / (2.0 * (1.0 + dt * gravity_config.damping));
+  require(falling.motion().linear.isApprox(expected_velocity, 1e-10));
+  require(falling.frameFromBody().position.isApprox(dt * expected_velocity, 1e-10));
+  for (Scalar const invalid : {-1.0, std::numeric_limits<Scalar>::infinity(),
+                               std::numeric_limits<Scalar>::quiet_NaN()}) {
+    bool rejected = false;
+    try {
+      simulation_config_t config;
+      config.damping = invalid;
+      (void)Simulator {config};
+    } catch (std::invalid_argument const&) {
+      rejected = true;
+    }
+    require(rejected);
+  }
+}
+
 }  // namespace
 
 int main() {
   using namespace stacking_core;
+  test_damping();
 
   pose_t const integrated = integrate_pose(
     pose_t {Vector3 {1.0, 2.0, 3.0}, Quaternion::Identity()},

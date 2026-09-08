@@ -105,7 +105,8 @@ void stacking_core::python::bind_simulation(nb::module_ &module) {
 
   nb::class_<simulation_solver_config_t>(module, "SolverConfig")
       .def(nb::init<>())
-      .def_rw("damping", &simulation_solver_config_t::damping)
+      .def_rw("constraint_scale_reference",
+              &simulation_solver_config_t::constraint_scale_reference)
       .def_rw("beta_init", &simulation_solver_config_t::beta_init)
       .def_rw("beta_update_interval",
               &simulation_solver_config_t::beta_update_interval)
@@ -150,6 +151,7 @@ void stacking_core::python::bind_simulation(nb::module_ &module) {
 
   nb::class_<simulation_config_t>(module, "SimulationConfig")
       .def(nb::init<>())
+      .def_rw("damping", &simulation_config_t::damping)
       .def_prop_rw(
           "gravity",
           [](simulation_config_t const &config) { return config.gravity; },
