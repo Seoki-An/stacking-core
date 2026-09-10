@@ -220,6 +220,8 @@ void bind_planner_grasp(nb::module_ &module) {
       .def_rw("spin_step", &grasp_sampling_config_t::spin_step)
       .def_rw("include_flipped", &grasp_sampling_config_t::include_flipped)
       .def_rw("retreat_distance", &grasp_sampling_config_t::retreat_distance)
+      .def_rw("fallback_retreat_distances", &grasp_sampling_config_t::fallback_retreat_distances)
+      .def_rw("fallback_min_candidates", &grasp_sampling_config_t::fallback_min_candidates)
       .def_rw("max_target_width", &grasp_sampling_config_t::max_target_width)
       .def_rw("aperture_margin", &grasp_sampling_config_t::aperture_margin)
       .def_rw("scene_clearance_margin",

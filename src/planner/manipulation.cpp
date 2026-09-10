@@ -1,6 +1,7 @@
 #include <stacking_core/planner/manipulation.hpp>
 
 #include "parallel.hpp"
+#include "recovery.hpp"
 
 #include <algorithm>
 #include <array>
@@ -43,7 +44,10 @@ namespace stacking_core {
     }
 
     bool valid_direct_config(direct_plan_config_t const& config) {
-      return config.approach_dir_tool.allFinite() &&
+      return std::isfinite(config.minimum_approach_up_component) &&
+        config.minimum_approach_up_component >= 0.0 &&
+        config.minimum_approach_up_component <= 1.0 &&
+        config.approach_dir_tool.allFinite() &&
         config.approach_dir_tool.norm() > 0.0 &&
         std::isfinite(config.approach_distance) &&
         config.approach_distance >= 0.0 &&
@@ -233,6 +237,11 @@ namespace stacking_core {
     std::optional<joint_grasp_candidate_t> resolve_grasp_ik(
       direct_plan_problem_t const& problem, grasp_candidate_t candidate,
       direct_plan_config_t const& config, planner_failure_t& failure) {
+      if (config.joint_grasp_recovery) {
+        return detail::resolve_grasp_with_recovery(
+          {problem.pick, problem.place}, problem.robot, problem.gripper,
+          candidate, config.inverse_kinematics, config.grasp_generation, failure);
+      }
       std::vector<Eigen::VectorXd> positions;
       positions.reserve(2);
       for (phase_scene_t const* phase : {&problem.pick, &problem.place}) {
@@ -330,10 +339,14 @@ namespace stacking_core {
       for (Scalar scale : std::array<Scalar, 4> {1.0, 0.75, 0.5, 0.25}) {
         pose_t pre_pick = grasp_pick;
         pre_pick.position += scale * config.approach_distance *
-          transform_vector(grasp_pick, approach_axis);
+          (config.scene_approach
+            ? detail::scene_approach_direction(problem.pick, config.minimum_approach_up_component)
+            : transform_vector(grasp_pick, approach_axis));
         pose_t pre_place = grasp_place;
         pre_place.position += scale * config.approach_distance *
-          transform_vector(grasp_place, approach_axis);
+          (config.scene_approach
+            ? detail::scene_approach_direction(problem.place, config.minimum_approach_up_component)
+            : transform_vector(grasp_place, approach_axis));
 
         motion_result_t pick_approach = solve_free_motion(
           free_motion_problem_t {
@@ -341,7 +354,7 @@ namespace stacking_core {
             .robot =
               robot_at(problem.robot, q_home, problem.robot.gripper_opening),
             .waypoints =
-              {tool_waypoint(problem.robot, pre_pick, config.move_steps),
+              {(config.joint_grasp_recovery ? detail::subgoal_waypoint(problem.robot, pre_pick, q_pick, config.move_steps, config.motion) : tool_waypoint(problem.robot, pre_pick, config.move_steps)),
                joint_waypoint(q_pick, config.grasp_steps)},
           },
           config.motion);
@@ -371,7 +384,7 @@ namespace stacking_core {
             // the approach subgoal to home, matching legacy AO_g. The next
             // segment starts from the actual endpoint with this attachment.
             .waypoints = {
-              tool_waypoint(problem.robot, pre_pick, config.grasp_steps),
+              (config.joint_grasp_recovery ? detail::subgoal_waypoint(problem.robot, pre_pick, q_pick, config.grasp_steps, config.motion) : tool_waypoint(problem.robot, pre_pick, config.grasp_steps)),
               joint_waypoint(q_home, config.move_steps)},
           },
           config.motion);
@@ -395,8 +408,10 @@ namespace stacking_core {
               problem.robot, endpoint(pick_retreat),
               refined.grasp.grasp.opening),
             .attachment = place_attachment,
-            .waypoints = {tool_waypoint(
-              problem.robot, pre_place, config.move_steps)},
+            .waypoints = {(config.joint_grasp_recovery
+              ? detail::subgoal_waypoint(problem.robot, pre_place, q_place,
+                  config.move_steps, config.motion)
+              : tool_waypoint(problem.robot, pre_place, config.move_steps))},
           },
           config.motion);
         if (transfer.status == solve_status_e::invalid_problem) {
@@ -448,7 +463,7 @@ namespace stacking_core {
             .robot = robot_at(
               problem.robot, q_at_place, problem.robot.gripper_opening),
             .waypoints =
-              {tool_waypoint(problem.robot, pre_place, config.grasp_steps),
+              {(config.joint_grasp_recovery ? detail::subgoal_waypoint(problem.robot, pre_place, q_place, config.grasp_steps, config.motion) : tool_waypoint(problem.robot, pre_place, config.grasp_steps)),
                joint_waypoint(q_home, config.move_steps)},
           },
           config.motion);
@@ -523,13 +538,15 @@ namespace stacking_core {
 
     std::vector<joint_grasp_candidate_t> direct_grasps(
       direct_plan_problem_t const& problem, direct_plan_config_t const& config,
-      planner_failure_t& failure, solve_status_e& status) {
+      planner_failure_t& failure, solve_status_e& status,
+      std::size_t candidate_target = 0) {
       if (!problem.grasp_candidates.empty()) {
         status = solve_status_e::success;
         return problem.grasp_candidates;
       }
       grasp_sampling_config_t sampling_config = config.grasp_sampling;
       sampling_config.worker_count = config.worker_count;
+      sampling_config.fallback_retreat_distances.clear();
       grasp_result_t sampled = sample_grasps(
         grasp_sampling_problem_t {
           .phases = {problem.pick, problem.place},
@@ -544,23 +561,43 @@ namespace stacking_core {
 
       std::vector<joint_grasp_candidate_t> reachable;
       reachable.reserve(sampled.candidates.size());
-      for (grasp_candidate_t& candidate : sampled.candidates) {
-        if (!candidate.failure.code.empty()) {
-          continue;
+      if (candidate_target == 0 && !config.grasp_sampling.fallback_retreat_distances.empty())
+        candidate_target = static_cast<std::size_t>(config.grasp_sampling.fallback_min_candidates);
+      // Legacy fills a small reachable pool. Recover one bounded batch at a
+      // time, preserving score order and avoiding unused joint optimizations.
+      std::size_t const batch_size = candidate_target == 0 ? 1 : candidate_target;
+      for (std::size_t start = 0; start < sampled.candidates.size(); start += batch_size) {
+        std::size_t count = std::min(batch_size, sampled.candidates.size() - start);
+        std::vector<std::optional<joint_grasp_candidate_t>> resolved(count);
+        std::vector<planner_failure_t> failures(count);
+        detail::planner_parallel_for(count, config.worker_count, [&](std::size_t i) {
+          auto const& candidate = sampled.candidates[start + i];
+          if (candidate.failure.code.empty())
+            resolved[i] = resolve_grasp_ik(problem, candidate, config, failures[i]);
+        });
+        for (std::size_t i = 0; i < count; ++i) {
+          if (resolved[i]) reachable.push_back(std::move(*resolved[i]));
+          else if (!failures[i].code.empty()) {
+            failure = std::move(failures[i]);
+            if (!failure.retryable) {
+              status = solve_status_e::invalid_problem;
+              return {};
+            }
+          }
         }
-        planner_failure_t ik_failure;
-        std::optional<joint_grasp_candidate_t> resolved = resolve_grasp_ik(
-          problem, std::move(candidate), config, ik_failure);
-        if (resolved.has_value()) {
-          reachable.push_back(std::move(*resolved));
-          continue;
+        if (candidate_target > 0 && reachable.size() >= candidate_target) {
+          reachable.resize(candidate_target);
+          break;
         }
-        if (!ik_failure.retryable) {
-          failure = std::move(ik_failure);
-          status = solve_status_e::invalid_problem;
-          return {};
-        }
-        failure = std::move(ik_failure);
+      }
+      for (Scalar distance : config.grasp_sampling.fallback_retreat_distances) {
+        if (reachable.size() >= static_cast<std::size_t>(config.grasp_sampling.fallback_min_candidates)) break;
+        auto extra_config = config;
+        extra_config.grasp_sampling.fallback_retreat_distances.clear();
+        extra_config.grasp_sampling.retreat_distance = distance;
+        auto extra = direct_grasps(problem, extra_config, failure, status, candidate_target - reachable.size());
+        if (status == solve_status_e::invalid_problem) return {};
+        reachable.insert(reachable.end(), std::make_move_iterator(extra.begin()), std::make_move_iterator(extra.end()));
       }
       if (reachable.empty()) {
         status = solve_status_e::infeasible;

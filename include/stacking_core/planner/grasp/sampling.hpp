@@ -29,6 +29,9 @@ namespace stacking_core {
 
     // Positive distances move the gripper opposite its approach direction.
     Scalar retreat_distance = 0.0;
+    // Additional passes when the nominal pool is empty or undersized.
+    std::vector<Scalar> fallback_retreat_distances;
+    int fallback_min_candidates = 1;
 
     // Zero disables an explicit target-width cap. Parallel-jaw sampling still
     // respects the maximum aperture measured from the gripper model.

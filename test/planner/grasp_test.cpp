@@ -1,3 +1,4 @@
+#include "../../src/planner/recovery.hpp"
 #include <stacking_core/planner.hpp>
 #include <stacking_core/io/urdf.hpp>
 
@@ -459,6 +460,30 @@ int main() {
   require(joint_result.selected_candidate()->positions[0].size() == 0);
   require(joint_result.selected_candidate()->grasp.contacts.size() == 2);
   require(joint_result.selected_candidate()->grasp.solver.converged);
+
+  // A fixed tool cannot reach this displaced pose, but its actual grasp is
+  // feasible. Recovery must optimize the grasp, not retry the impossible IK.
+  grasp_candidate_t displaced = joint_result.selected_candidate()->grasp;
+  displaced.grasp.frame_from_grasp.position.x() += 0.1;
+  motion_robot_t robot {pick_state, LinkId {20}, {}};
+  auto fixed_ik = solve_inverse_kinematics(
+    {pick_state, LinkId {20}, displaced.grasp.frame_from_grasp, false});
+  require(fixed_ik.status != solve_status_e::success);
+  planner_failure_t recovery_failure;
+  auto recovered = detail::resolve_grasp_with_recovery(
+    {pick}, robot, joint_problem.grasp.gripper, displaced, {}, test_config(), recovery_failure);
+  require(recovered.has_value());
+  require(recovery_failure.code.empty());
+  require(recovered->grasp.grasp.frame_from_grasp.position.norm() < 1e-10);
+
+  // The fixed-scene recovery seed must also pass the joint solve at both
+  // endpoints before it is admitted to direct or regrasp motion planning.
+  auto recovered_pair = detail::resolve_grasp_with_recovery(
+    {pick, pick}, robot, joint_problem.grasp.gripper, displaced, {},
+    test_config(), recovery_failure);
+  require(recovered_pair.has_value());
+  require(recovered_pair->positions.size() == 2);
+  require(recovered_pair->grasp.grasp.frame_from_grasp.position.norm() < 1e-10);
 
   joint_problem.initial_states.pop_back();
   joint_grasp_result_t const invalid =

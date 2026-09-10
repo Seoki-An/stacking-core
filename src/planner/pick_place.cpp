@@ -229,6 +229,9 @@ namespace stacking_core {
       return result;
     }
 
+    regrasp_config_t regrasp_config = config.regrasp;
+    regrasp_config.grasp_generation = config.direct.grasp_generation;
+    regrasp_config.inverse_kinematics = config.direct.inverse_kinematics;
     plan_result_t fallback = solve_regrasp(
       regrasp_problem_t {
         .pick = problem.direct.pick,
@@ -238,8 +241,9 @@ namespace stacking_core {
         .pick_grasps = feasible_candidates(pick),
         .place_grasps = feasible_candidates(place),
         .handoff_position = problem.handoff_position,
+        .gripper = problem.direct.gripper,
       },
-      config.regrasp);
+      regrasp_config);
     planner_timings_t combined_timings = direct.timings;
     accumulate_timings(combined_timings, fallback_timings);
     accumulate_timings(combined_timings, fallback.timings);

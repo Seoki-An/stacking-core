@@ -45,6 +45,9 @@ namespace stacking_core {
   };
 
   struct direct_plan_config_t {
+    bool joint_grasp_recovery = false;
+    bool scene_approach = false;
+    Scalar minimum_approach_up_component = 0.5;
     grasp_sampling_config_t grasp_sampling;
     grasp_generation_config_t grasp_generation;
     inverse_kinematics_config_t inverse_kinematics;

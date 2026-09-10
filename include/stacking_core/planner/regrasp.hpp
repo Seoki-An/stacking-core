@@ -45,9 +45,15 @@ namespace stacking_core {
     std::vector<grasp_candidate_t> pick_grasps;
     std::vector<grasp_candidate_t> place_grasps;
     Vector3 handoff_position = Vector3::Zero();
+    std::optional<gripper_model_t> gripper;
   };
 
   struct regrasp_config_t {
+    bool joint_grasp_recovery = false;
+    bool scene_approach = false;
+    Scalar minimum_approach_up_component = 0.5;
+    grasp_generation_config_t grasp_generation;
+    inverse_kinematics_config_t inverse_kinematics;
     stable_pose_config_t stable_pose;
     motion_planning_config_t motion;
     Vector3 approach_dir_tool = -Vector3::UnitY();

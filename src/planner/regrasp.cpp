@@ -2,6 +2,7 @@
 #include <stacking_core/planner/regrasp.hpp>
 
 #include "parallel.hpp"
+#include "recovery.hpp"
 
 #include <Eigen/Geometry>
 
@@ -67,7 +68,10 @@ namespace stacking_core {
     }
 
     bool valid_config(regrasp_config_t const& config) {
-      return config.approach_dir_tool.allFinite() &&
+      return std::isfinite(config.minimum_approach_up_component) &&
+        config.minimum_approach_up_component >= 0.0 &&
+        config.minimum_approach_up_component <= 1.0 &&
+        config.approach_dir_tool.allFinite() &&
         config.approach_dir_tool.norm() > 0.0 &&
         std::isfinite(config.approach_distance) &&
         config.approach_distance >= 0.0 &&
@@ -278,8 +282,28 @@ namespace stacking_core {
 
     regrasp_leg_t solve_pick_leg(
       regrasp_problem_t const& problem, phase_scene_t const& handoff,
-      grasp_candidate_t const& candidate, regrasp_config_t const& config) {
+      grasp_candidate_t const& initial_candidate, regrasp_config_t const& config) {
       regrasp_leg_t last;
+      grasp_candidate_t candidate = initial_candidate;
+      std::vector<Eigen::VectorXd> recovered_positions;
+      if (config.joint_grasp_recovery) {
+        if (!problem.gripper.has_value()) {
+          last.failure = {.code = "missing_recovery_gripper",
+                          .message = "joint grasp recovery requires a gripper", .retryable = false};
+          return last;
+        }
+        auto recovered = detail::resolve_grasp_with_recovery(
+          {problem.pick, handoff}, problem.robot, *problem.gripper, candidate,
+          config.inverse_kinematics, config.grasp_generation, last.failure);
+        if (!recovered.has_value()) {
+          if (last.failure.retryable) last.failure.code =
+            last.failure.code == "grasp_ik_first_phase"
+              ? "regrasp_pick_ik_recovery" : "regrasp_ac_ik_recovery";
+          return last;
+        }
+        candidate = recovered->grasp;
+        recovered_positions = recovered->positions;
+      }
       BodyInstance const& pick_target =
         problem.pick.scene.body(problem.pick.target);
       BodyInstance const& handoff_target = handoff.scene.body(handoff.target);
@@ -293,10 +317,14 @@ namespace stacking_core {
       for (Scalar scale : std::array<Scalar, 4> {1.0, 0.75, 0.5, 0.25}) {
         pose_t approach_pick = grasp_pick;
         approach_pick.position += scale * config.approach_distance *
-          transform_vector(grasp_pick, approach_axis);
+          (config.scene_approach
+            ? detail::scene_approach_direction(problem.pick, config.minimum_approach_up_component)
+            : transform_vector(grasp_pick, approach_axis));
         pose_t approach_handoff = grasp_handoff;
         approach_handoff.position += scale * config.approach_distance *
-          transform_vector(grasp_handoff, approach_axis);
+          (config.scene_approach
+            ? detail::scene_approach_direction(handoff, config.minimum_approach_up_component)
+            : transform_vector(grasp_handoff, approach_axis));
 
         regrasp_leg_t leg;
         leg.score = candidate.score;
@@ -308,7 +336,7 @@ namespace stacking_core {
               robot_at(problem.robot, q_home, problem.robot.gripper_opening),
             .waypoints =
               {
-                tool_waypoint(problem.robot, approach_pick, config.move_steps),
+                (config.joint_grasp_recovery ? detail::subgoal_waypoint(problem.robot, approach_pick, recovered_positions[0], config.move_steps, config.motion) : tool_waypoint(problem.robot, approach_pick, config.move_steps)),
                 tool_waypoint(problem.robot, grasp_pick, config.grasp_steps),
               },
           },
@@ -330,8 +358,8 @@ namespace stacking_core {
             .scene = problem.pick.scene,
             .robot = robot_at(problem.robot, q_pick, candidate.grasp.opening),
             .attachment = pick_attachment,
-            .waypoints = {tool_waypoint(
-              problem.robot, approach_pick, config.grasp_steps)},
+            .waypoints = {(config.joint_grasp_recovery ? detail::subgoal_waypoint(problem.robot, approach_pick, recovered_positions[0], config.grasp_steps, config.motion) : tool_waypoint(
+              problem.robot, approach_pick, config.grasp_steps))},
           },
           config.motion);
         if (retreat.status != solve_status_e::success) {
@@ -351,8 +379,8 @@ namespace stacking_core {
             .attachment = handoff_attachment,
             .waypoints =
               {
-                tool_waypoint(
-                  problem.robot, approach_handoff, config.move_steps),
+                (config.joint_grasp_recovery ? detail::subgoal_waypoint(problem.robot, approach_handoff, recovered_positions[1], config.move_steps, config.motion) : tool_waypoint(
+                  problem.robot, approach_handoff, config.move_steps)),
                 tool_waypoint(problem.robot, grasp_handoff, config.grasp_steps),
               },
           },
@@ -369,6 +397,16 @@ namespace stacking_core {
             : handoff_place.status;
           leg.failure =
             stage_failure(planning_stage_e::handoff_place, handoff_place);
+          if (config.joint_grasp_recovery && handoff_place.status == solve_status_e::success) {
+            leg.failure.code = "regrasp_handoff_target_boundary";
+            leg.failure.retryable = true;
+            leg.failure.message = released_target
+              ? "target boundary mismatch: position_error=" + std::to_string((released_target->position - handoff_target.frameFromBody().position).norm())
+                + " m (limit=" + std::to_string(config.target_pos_tol) + "), rotation_error="
+                + std::to_string(released_target->orientation.angularDistance(handoff_target.frameFromBody().orientation))
+                + " rad (limit=" + std::to_string(config.target_rot_tol) + ")"
+              : "motion returned no terminal target pose";
+          }
           last = std::move(leg);
           continue;
         }
@@ -381,8 +419,8 @@ namespace stacking_core {
               robot_at(problem.robot, q_release, problem.robot.gripper_opening),
             .waypoints =
               {
-                tool_waypoint(
-                  problem.robot, approach_handoff, config.grasp_steps),
+                (config.joint_grasp_recovery ? detail::subgoal_waypoint(problem.robot, approach_handoff, recovered_positions[1], config.grasp_steps, config.motion) : tool_waypoint(
+                  problem.robot, approach_handoff, config.grasp_steps)),
                 joint_waypoint(q_home, config.move_steps),
               },
           },
@@ -450,8 +488,28 @@ namespace stacking_core {
 
     regrasp_leg_t solve_place_leg(
       regrasp_problem_t const& problem, phase_scene_t const& handoff,
-      grasp_candidate_t const& candidate, regrasp_config_t const& config) {
+      grasp_candidate_t const& initial_candidate, regrasp_config_t const& config) {
       regrasp_leg_t last;
+      grasp_candidate_t candidate = initial_candidate;
+      std::vector<Eigen::VectorXd> recovered_positions;
+      if (config.joint_grasp_recovery) {
+        if (!problem.gripper.has_value()) {
+          last.failure = {.code = "missing_recovery_gripper",
+                          .message = "joint grasp recovery requires a gripper", .retryable = false};
+          return last;
+        }
+        auto recovered = detail::resolve_grasp_with_recovery(
+          {problem.place, handoff}, problem.robot, *problem.gripper, candidate,
+          config.inverse_kinematics, config.grasp_generation, last.failure);
+        if (!recovered.has_value()) {
+          if (last.failure.retryable) last.failure.code =
+            last.failure.code == "grasp_ik_first_phase"
+              ? "regrasp_place_ik_recovery" : "regrasp_bc_ik_recovery";
+          return last;
+        }
+        candidate = recovered->grasp;
+        recovered_positions = recovered->positions;
+      }
       BodyInstance const& handoff_target = handoff.scene.body(handoff.target);
       BodyInstance const& place_target =
         problem.place.scene.body(problem.place.target);
@@ -466,10 +524,14 @@ namespace stacking_core {
       for (Scalar scale : std::array<Scalar, 4> {1.0, 0.75, 0.5, 0.25}) {
         pose_t approach_handoff = grasp_handoff;
         approach_handoff.position += scale * config.approach_distance *
-          transform_vector(grasp_handoff, approach_axis);
+          (config.scene_approach
+            ? detail::scene_approach_direction(handoff, config.minimum_approach_up_component)
+            : transform_vector(grasp_handoff, approach_axis));
         pose_t approach_place = grasp_place;
         approach_place.position += scale * config.approach_distance *
-          transform_vector(grasp_place, approach_axis);
+          (config.scene_approach
+            ? detail::scene_approach_direction(problem.place, config.minimum_approach_up_component)
+            : transform_vector(grasp_place, approach_axis));
 
         regrasp_leg_t leg;
         leg.score = candidate.score;
@@ -481,8 +543,8 @@ namespace stacking_core {
               robot_at(problem.robot, q_home, problem.robot.gripper_opening),
             .waypoints =
               {
-                tool_waypoint(
-                  problem.robot, approach_handoff, config.move_steps),
+                (config.joint_grasp_recovery ? detail::subgoal_waypoint(problem.robot, approach_handoff, recovered_positions[1], config.move_steps, config.motion) : tool_waypoint(
+                  problem.robot, approach_handoff, config.move_steps)),
                 tool_waypoint(problem.robot, grasp_handoff, config.grasp_steps),
               },
           },
@@ -506,8 +568,8 @@ namespace stacking_core {
             .robot =
               robot_at(problem.robot, q_handoff, candidate.grasp.opening),
             .attachment = handoff_attachment,
-            .waypoints = {tool_waypoint(
-              problem.robot, approach_handoff, config.grasp_steps)},
+            .waypoints = {(config.joint_grasp_recovery ? detail::subgoal_waypoint(problem.robot, approach_handoff, recovered_positions[1], config.grasp_steps, config.motion) : tool_waypoint(
+              problem.robot, approach_handoff, config.grasp_steps))},
           },
           config.motion);
         if (handoff_pick.status != solve_status_e::success) {
@@ -528,7 +590,7 @@ namespace stacking_core {
             .attachment = place_attachment,
             .waypoints =
               {
-                tool_waypoint(problem.robot, approach_place, config.move_steps),
+                (config.joint_grasp_recovery ? detail::subgoal_waypoint(problem.robot, approach_place, recovered_positions[0], config.move_steps, config.motion) : tool_waypoint(problem.robot, approach_place, config.move_steps)),
                 tool_waypoint(problem.robot, grasp_place, config.grasp_steps),
               },
           },
@@ -544,6 +606,16 @@ namespace stacking_core {
             : place_approach.status;
           leg.failure =
             stage_failure(planning_stage_e::place_approach, place_approach);
+          if (config.joint_grasp_recovery && place_approach.status == solve_status_e::success) {
+            leg.failure.code = "regrasp_place_target_boundary";
+            leg.failure.retryable = false;
+            leg.failure.message = released_target
+              ? "target boundary mismatch: position_error=" + std::to_string((released_target->position - place_target.frameFromBody().position).norm())
+                + " m (limit=" + std::to_string(config.target_pos_tol) + "), rotation_error="
+                + std::to_string(released_target->orientation.angularDistance(place_target.frameFromBody().orientation))
+                + " rad (limit=" + std::to_string(config.target_rot_tol) + ")"
+              : "motion returned no terminal target pose";
+          }
           last = std::move(leg);
           continue;
         }
@@ -556,8 +628,8 @@ namespace stacking_core {
               robot_at(problem.robot, q_place, problem.robot.gripper_opening),
             .waypoints =
               {
-                tool_waypoint(
-                  problem.robot, approach_place, config.grasp_steps),
+                (config.joint_grasp_recovery ? detail::subgoal_waypoint(problem.robot, approach_place, recovered_positions[0], config.grasp_steps, config.motion) : tool_waypoint(
+                  problem.robot, approach_place, config.grasp_steps)),
                 joint_waypoint(q_home, config.move_steps),
               },
           },

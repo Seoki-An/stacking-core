@@ -1,3 +1,4 @@
+#include "../../src/planner/recovery.hpp"
 #include <stacking_core/io/urdf.hpp>
 #include <stacking_core/planner.hpp>
 
@@ -293,6 +294,41 @@ int main() {
   }
   require(sampled.selected_candidate() != nullptr);
   require(sampled.selected_candidate()->solver.converged);
+
+  // An unreachable seed standoff fails, while a later offset finds a grasp.
+  auto far_sampling = parallel_config;
+  far_sampling.retreat_distance = 1000.0;
+  auto far_result = sample_grasps(problem, far_sampling, generation_config);
+  require(far_result.status != solve_status_e::success);
+  far_sampling.fallback_retreat_distances = {0.0};
+  auto retried = sample_grasps(problem, far_sampling, generation_config);
+  require(retried.status == solve_status_e::success);
+
+  // Plane normals and nearby obstacles determine the approach, independently
+  // of the gripper frame. Mirror the neighbour to check the separation sign.
+  auto approach_scene = [&](Scalar side, Quaternion plane_rotation) {
+    std::vector<BodyInstance> bodies;
+    bodies.emplace_back(body_instance_config_t {.id=EntityId{1}, .model=cube_model(0.5), .frame_from_body={}});
+    bodies.emplace_back(body_instance_config_t {.id=EntityId{2}, .model=plane_model(),
+      .frame_from_body=pose_t{Vector3{0,0,-0.5},plane_rotation}});
+    std::vector<EntityId> ids{EntityId{1},EntityId{2}};
+    if (side != 0) {
+      bodies.emplace_back(body_instance_config_t {.id=EntityId{3}, .model=cube_model(0.5),
+        .frame_from_body=pose_t{Vector3{side*0.9,0,0},Quaternion::Identity()}});
+      ids.push_back(EntityId{3});
+    }
+    auto snapshot=std::make_shared<SceneSnapshot>(scene_snapshot_config_t{.frame=FrameId{1},.bodies=std::move(bodies)});
+    return phase_scene_t{SceneView{snapshot,ids},EntityId{1}};
+  };
+  auto up = detail::scene_approach_direction(approach_scene(0,Quaternion::Identity()), .5);
+  require(up.isApprox(Vector3::UnitZ(),1e-9));
+  auto left = detail::scene_approach_direction(approach_scene(1,Quaternion::Identity()), .5);
+  auto right = detail::scene_approach_direction(approach_scene(-1,Quaternion::Identity()), .5);
+  require(left.x() < 0 && right.x() > 0);
+  require(left.z() >= .5 && right.z() >= .5);
+  require(std::abs(left.norm()-1) < 1e-9);
+  Quaternion tilt{Eigen::AngleAxis<Scalar>{.3,Vector3::UnitY()}};
+  require(detail::scene_approach_direction(approach_scene(0,tilt), .5).isApprox(tilt*Vector3::UnitZ(),1e-9));
 
   grasp_sampling_config_t serial_sampling_config = parallel_config;
   serial_sampling_config.max_seeds = 15;

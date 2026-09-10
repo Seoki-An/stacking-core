@@ -19,6 +19,9 @@ void bind_planner_pick_place(nb::module_ &module) {
       .def_rw("inverse_kinematics", &direct_plan_config_t::inverse_kinematics)
       .def_rw("grasp_simulation", &direct_plan_config_t::grasp_simulation)
       .def_rw("motion", &direct_plan_config_t::motion)
+      .def_rw("joint_grasp_recovery", &direct_plan_config_t::joint_grasp_recovery)
+      .def_rw("scene_approach", &direct_plan_config_t::scene_approach)
+      .def_rw("minimum_approach_up_component", &direct_plan_config_t::minimum_approach_up_component)
       .def_rw("simulation_refinement",
               &direct_plan_config_t::simulation_refinement)
       .def_rw("approach_dir_tool", &direct_plan_config_t::approach_dir_tool)
@@ -42,8 +45,13 @@ void bind_planner_pick_place(nb::module_ &module) {
 
   nb::class_<regrasp_config_t>(module, "RegraspConfig")
       .def(nb::init<>())
+      .def_rw("grasp_generation", &regrasp_config_t::grasp_generation)
+      .def_rw("inverse_kinematics", &regrasp_config_t::inverse_kinematics)
       .def_rw("stable_pose", &regrasp_config_t::stable_pose)
       .def_rw("motion", &regrasp_config_t::motion)
+      .def_rw("joint_grasp_recovery", &regrasp_config_t::joint_grasp_recovery)
+      .def_rw("scene_approach", &regrasp_config_t::scene_approach)
+      .def_rw("minimum_approach_up_component", &regrasp_config_t::minimum_approach_up_component)
       .def_rw("approach_dir_tool", &regrasp_config_t::approach_dir_tool)
       .def_rw("approach_distance", &regrasp_config_t::approach_distance)
       .def_rw("target_pos_tol", &regrasp_config_t::target_pos_tol)
@@ -120,6 +128,7 @@ void bind_planner_pick_place(nb::module_ &module) {
       .def_rw("handoff", &regrasp_problem_t::handoff)
       .def_rw("place", &regrasp_problem_t::place)
       .def_rw("robot", &regrasp_problem_t::robot)
+      .def_rw("gripper", &regrasp_problem_t::gripper)
       .def_rw("pick_grasps", &regrasp_problem_t::pick_grasps)
       .def_rw("place_grasps", &regrasp_problem_t::place_grasps)
       .def_rw("handoff_position", &regrasp_problem_t::handoff_position);

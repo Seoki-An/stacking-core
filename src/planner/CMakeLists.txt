@@ -6,6 +6,7 @@ target_sources(
   PRIVATE
     inverse_kinematics.cpp
     manipulation.cpp
+    recovery.cpp
     motion.cpp
     pick_place.cpp
     regrasp.cpp

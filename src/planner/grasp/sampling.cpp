@@ -1,6 +1,7 @@
 #include <stacking_core/body/convex_support_envelope.hpp>
 #include <stacking_core/collision.hpp>
 #include <stacking_core/planner/grasp/sampling.hpp>
+#include "evaluation.hpp"
 
 #include "../parallel.hpp"
 
@@ -522,6 +523,9 @@ namespace stacking_core {
         "grasp sampling requires at least one target phase");
     }
     if (
+      config.fallback_min_candidates <= 0 ||
+      !std::all_of(config.fallback_retreat_distances.begin(), config.fallback_retreat_distances.end(),
+        [](Scalar x) { return std::isfinite(x) && x >= 0.0; }) ||
       config.max_seeds <= 0 || config.dir_samples <= 0 ||
       config.spin_samples <= 0 || !std::isfinite(config.spin_step) ||
       !std::isfinite(config.retreat_distance) ||
@@ -633,7 +637,7 @@ namespace stacking_core {
     return out;
   }
 
-  grasp_result_t sample_grasps(
+  static grasp_result_t sample_grasps_once(
     grasp_sampling_problem_t const& problem,
     grasp_sampling_config_t const& sampling_config,
     grasp_generation_config_t const& generation_config) {
@@ -648,6 +652,10 @@ namespace stacking_core {
       };
     }
 
+    if (auto error = grasp_detail::validate_grasp_problem(
+          {problem.phases, problem.gripper, seeds.seeds.front().grasp}, generation_config)) {
+      return {.status = solve_status_e::invalid_problem, .failure = *error};
+    }
     std::vector<std::optional<grasp_evaluation_t>> evaluated(
       seeds.seeds.size());
     std::atomic<std::size_t> accepted_count {0};
@@ -743,6 +751,42 @@ namespace stacking_core {
       .selected_index = std::size_t {0},
       .failure = {},
     };
+  }
+
+  grasp_result_t sample_grasps(
+    grasp_sampling_problem_t const& problem,
+    grasp_sampling_config_t const& sampling,
+    grasp_generation_config_t const& generation) {
+    auto result = sample_grasps_once(problem, sampling, generation);
+    if (sampling.fallback_retreat_distances.empty() || result.status == solve_status_e::invalid_problem)
+      return result;
+    auto count = [&]() {
+      return std::count_if(result.candidates.begin(), result.candidates.end(),
+        [](auto const& c) { return c.failure.code.empty(); });
+    };
+    auto local = sampling;
+    local.fallback_retreat_distances.clear();
+    for (Scalar distance : sampling.fallback_retreat_distances) {
+      if (count() >= sampling.fallback_min_candidates) break;
+      local.retreat_distance = distance;
+      auto extra = sample_grasps_once(problem, local, generation);
+      if (extra.status == solve_status_e::invalid_problem) return extra;
+      for (auto& candidate : extra.candidates) {
+        bool duplicate = std::any_of(result.candidates.begin(), result.candidates.end(),
+          [&](auto const& prior) { return prior.failure.code.empty() && same_grasp(prior.grasp, candidate.grasp); });
+        if (!duplicate) result.candidates.push_back(std::move(candidate));
+      }
+    }
+    std::stable_sort(result.candidates.begin(), result.candidates.end(), [](auto const& a, auto const& b) {
+      if (a.failure.code.empty() != b.failure.code.empty()) return a.failure.code.empty();
+      return a.score > b.score;
+    });
+    if (count() > 0) {
+      result.status = solve_status_e::success;
+      result.selected_index = 0;
+      result.failure = {};
+    }
+    return result;
   }
 
   joint_grasp_result_t sample_joint_grasps(
